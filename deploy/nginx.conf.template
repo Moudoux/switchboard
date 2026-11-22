@@ -1,0 +1,28 @@
+# Site for the nginx proxy on the Pi, in the style of its other templates.
+server {
+    listen 443 ssl;
+    server_name notify.$DOMAIN_NAME notify.$TAILSCALE_NAME;
+
+    ssl_certificate     /cert/wildcard.$DOMAIN_NAME.crt;
+    ssl_certificate_key /cert/wildcard.$DOMAIN_NAME.key;
+
+    access_log off;
+    set $upstream switchboard;
+    client_max_body_size 256k;
+
+    location / {
+        proxy_pass http://$upstream:8080;
+    }
+
+    # Live updates for the GUI (server-sent events): don't buffer, and keep the stream open.
+    location = /api/events {
+        proxy_pass http://$upstream:8080;
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+    }
+
+    error_page 502 @502;
+    location @502 {
+        return 502 "Service unavailable";
+    }
+}

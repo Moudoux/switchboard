@@ -1,0 +1,23 @@
+# Switchboard behind a reverse proxy that terminates TLS. Passkeys need HTTPS with a certificate
+# your browsers trust, on the hostname set in SWITCHBOARD_ORIGIN.
+services:
+  switchboard:
+    image: ghcr.io/moudoux/switchboard:latest
+    container_name: switchboard
+    restart: unless-stopped
+    environment:
+      SWITCHBOARD_ORIGIN: https://notify.example.lan
+      # SWITCHBOARD_RETENTION_DAYS: "30"
+      # SWITCHBOARD_CONCURRENCY: "16"
+      # RUST_LOG: switchboard=info
+    volumes:
+      - ./data:/data
+    networks:
+      - nginx
+    # Or publish the port directly when there is no proxy in front:
+    # ports:
+    #   - "8080:8080"
+
+networks:
+  nginx:
+    external: true
