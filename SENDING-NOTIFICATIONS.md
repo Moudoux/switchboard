@@ -51,7 +51,7 @@ A title or a body is required. A blank one doesn't count. **Unknown fields are r
 | 4        | High: something failed or needs attention soon.               |
 | 5        | Urgent: something is down or needs a person now.              |
 
-Use 5 sparingly. Quiet hours usually let priority 5 through at night. Some targets alert harder at 5: the Discord preset pings `@here`, and Apprise targets send it as a failure.
+Use 5 sparingly. Quiet hours usually let priority 5 through at night. Some targets alert harder at 5: the Discord preset pings `@here`, the ntfy preset sends it as ntfy's max priority, and Apprise targets send it as a failure.
 
 ### Plain text
 

@@ -18,6 +18,13 @@ export const defaultQuietHours = (): QuietHours => ({
   minPriority: 5,
 });
 
+/** An unguessable ntfy topic. crypto.getRandomValues also works outside a secure context. */
+function randomTopic(): string {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+  const bytes = crypto.getRandomValues(new Uint8Array(20));
+  return "switchboard-" + Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
+}
+
 export type Preset = {
   id: string;
   type: "http" | "apprise";
@@ -71,6 +78,34 @@ export const presets: Preset[] = [
       retry: { ...defaultRetry },
       quietHours: defaultQuietHours(),
       preset: "discord",
+    }),
+  },
+  {
+    id: "ntfy",
+    type: "http",
+    label: "ntfy",
+    description: "Push to the ntfy app on a phone, through ntfy.sh or your own ntfy server",
+    make: () => ({
+      name: "ntfy",
+      method: "POST",
+      // JSON publishing goes to the server's root, with the topic in the body.
+      url: "https://ntfy.sh",
+      headers: [],
+      body: `{# Anyone who knows a topic's name can read it on ntfy.sh, so keep the random one.
+   Subscribe to it in the ntfy app. For a reserved topic or your own server with
+   access control, add a header "Authorization" with "Bearer tk_…". #}
+{
+  "topic": ${JSON.stringify(randomTopic())},
+  "title": {{ (n.title or n.source.name)|tojson }},
+  "message": {{ (n.body or n.title or n.source.name)[:4000]|tojson }},
+  "priority": {{ n.priority }},
+  {% if n.url %}"click": {{ n.url|tojson }},{% endif %}
+  "tags": {{ n.tags|tojson }}
+}`,
+      timeoutSecs: 10,
+      retry: { ...defaultRetry },
+      quietHours: defaultQuietHours(),
+      preset: "ntfy",
     }),
   },
   {

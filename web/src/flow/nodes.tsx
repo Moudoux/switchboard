@@ -89,7 +89,7 @@ function Stats({ stats }: Flags) {
   );
 }
 
-const presetIcon: Record<string, string> = { discord: "D", "claude-monitor": "M", webhook: "↗" };
+const presetIcon: Record<string, string> = { discord: "D", "claude-monitor": "M", ntfy: "N", webhook: "↗" };
 
 export function HttpNode({ data, selected }: NodeProps<HttpNodeT>) {
   let host = data.url;
