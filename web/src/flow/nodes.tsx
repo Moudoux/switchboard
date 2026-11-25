@@ -1,15 +1,17 @@
 // The node types drawn on the canvas. Handles match what the server accepts:
 // sources, filters and dedupe nodes connect onwards; a filter has "match" and "else" outputs and a
-// dedupe node "new" and "duplicate"; a target's only output is "fallback", to another target.
+// dedupe node "new" and "duplicate"; a group's one output leads to targets and groups; a target's
+// only output is "fallback", to another target or a group.
 
-import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import { formatDuration, type AppriseData, type DedupData, type FilterData, type HttpData, type QuietHours, type SourceData } from "../api";
+import { Handle, Position, useNodeConnections, type Node, type NodeProps } from "@xyflow/react";
+import { formatDuration, type AppriseData, type DedupData, type FilterData, type GroupData, type HttpData, type QuietHours, type SourceData } from "../api";
 import { opLabel } from "./conditions";
 
 type Flags = { hasToken?: boolean; stats?: { delivered: number; failed: number } };
 export type SourceNodeT = Node<SourceData & Flags, "source">;
 export type FilterNodeT = Node<FilterData, "filter">;
 export type DedupNodeT = Node<DedupData, "dedup">;
+export type GroupNodeT = Node<GroupData, "group">;
 export type HttpNodeT = Node<HttpData & Flags, "http">;
 export type AppriseNodeT = Node<AppriseData & Flags, "apprise">;
 
@@ -65,6 +67,21 @@ export function DedupNode({ data, selected }: NodeProps<DedupNodeT>) {
       <div className="handle-label handle-label-else">duplicate</div>
       <Handle type="source" id="new" position={Position.Right} className="handle-match" style={{ top: "35%" }} />
       <Handle type="source" id="duplicate" position={Position.Right} className="handle-else" style={{ top: "75%" }} />
+    </div>
+  );
+}
+
+export function GroupNode({ data, selected }: NodeProps<GroupNodeT>) {
+  const members = useNodeConnections({ handleType: "source" }).length;
+  return (
+    <div className={`node node-group ${selected ? "selected" : ""}`}>
+      <Handle type="target" position={Position.Left} />
+      <div className="node-kind">Group</div>
+      <div className="node-title">{data.name}</div>
+      <div className={`node-meta ${members ? "" : "warn"}`}>
+        {members ? `sends to ${members} ${members === 1 ? "target or group" : "targets or groups"}` : "nothing connected yet"}
+      </div>
+      <Handle type="source" position={Position.Right} />
     </div>
   );
 }
@@ -142,4 +159,4 @@ export function AppriseNode({ data, selected }: NodeProps<AppriseNodeT>) {
   );
 }
 
-export const nodeTypes = { source: SourceNode, filter: FilterNode, dedup: DedupNode, http: HttpNode, apprise: AppriseNode };
+export const nodeTypes = { source: SourceNode, filter: FilterNode, dedup: DedupNode, group: GroupNode, http: HttpNode, apprise: AppriseNode };

@@ -8,8 +8,10 @@
 //!   passes, and by the `else` handle when it doesn't.
 //! - `dedup` nodes let a notification through `new` the first time its key is seen within a
 //!   window, and through `duplicate` after that. What they've seen is kept in SQLite.
+//! - `group` nodes bundle targets: everything that reaches one goes on to every target (or
+//!   group) it connects to. A group can also be a target's fallback.
 //! - `http` and `apprise` nodes are targets. Edges leaving by the `fallback` handle go to the
-//!   targets tried once this target has given up.
+//!   targets (or groups) tried once this target has given up.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -41,12 +43,19 @@ pub enum NodeKind {
     Source(SourceNode),
     Filter(FilterNode),
     Dedup(DedupNode),
+    Group(GroupNode),
     Http(HttpTarget),
     Apprise(AppriseTarget),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceNode {
+    pub name: String,
+}
+
+/// Passes everything on to the targets and groups it connects to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupNode {
     pub name: String,
 }
 
@@ -336,7 +345,7 @@ impl Graph {
             let Some(node) = self.node(&id) else { continue };
             // The output to follow, and the one an edge without a handle counts as.
             let follow: Option<(&str, &str)> = match &node.kind {
-                NodeKind::Source(_) => None,
+                NodeKind::Source(_) | NodeKind::Group(_) => None,
                 NodeKind::Filter(f) => Some((
                     if f.matches(n) {
                         HANDLE_MATCH
@@ -372,13 +381,28 @@ impl Graph {
         routing
     }
 
-    /// The targets to try once `target_id` has given up.
+    /// The targets to try once `target_id` has given up, with groups expanded, each once.
     pub fn fallbacks(&self, target_id: &str) -> Vec<String> {
-        self.edges_from(target_id)
+        let mut targets = Vec::new();
+        let mut seen = HashSet::from([target_id.to_string()]);
+        let mut queue: VecDeque<String> = self
+            .edges_from(target_id)
             .filter(|e| e.source_handle.as_deref() == Some(HANDLE_FALLBACK))
-            .filter(|e| self.target(&e.target).is_some())
             .map(|e| e.target.clone())
-            .collect()
+            .collect();
+        while let Some(id) = queue.pop_front() {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            match self.node(&id).map(|n| &n.kind) {
+                Some(NodeKind::Group(_)) => {
+                    queue.extend(self.edges_from(&id).map(|e| e.target.clone()));
+                }
+                Some(k) if k.as_target().is_some() => targets.push(id),
+                _ => {}
+            }
+        }
+        targets
     }
 
     /// Every problem with the graph, as messages for the GUI. Empty means it can be saved.
@@ -401,7 +425,7 @@ impl Graph {
                 ));
             }
             match &node.kind {
-                NodeKind::Source(_) => {}
+                NodeKind::Source(_) | NodeKind::Group(_) => {}
                 NodeKind::Filter(f) => {
                     for c in &f.conditions {
                         if let Err(e) = c.check() {
@@ -505,8 +529,9 @@ impl Graph {
                 (NodeKind::Dedup(_), _) => {
                     matches!(handle, None | Some(HANDLE_NEW | HANDLE_DUPLICATE))
                 }
+                (NodeKind::Group(_), to) => handle.is_none() && to.delivers(),
                 (NodeKind::Http(_) | NodeKind::Apprise(_), to) => {
-                    to.as_target().is_some() && handle == Some(HANDLE_FALLBACK)
+                    to.delivers() && handle == Some(HANDLE_FALLBACK)
                 }
             };
             if !ok {
@@ -554,6 +579,7 @@ impl NodeKind {
             NodeKind::Source(s) => &s.name,
             NodeKind::Filter(f) => &f.name,
             NodeKind::Dedup(d) => &d.name,
+            NodeKind::Group(g) => &g.name,
             NodeKind::Http(t) => &t.name,
             NodeKind::Apprise(t) => &t.name,
         }
@@ -567,11 +593,17 @@ impl NodeKind {
         }
     }
 
+    /// A target, or a group of them: what a group or a fallback edge may lead to.
+    fn delivers(&self) -> bool {
+        matches!(self, NodeKind::Group(_)) || self.as_target().is_some()
+    }
+
     fn label(&self) -> &'static str {
         match self {
             NodeKind::Source(_) => "source",
             NodeKind::Filter(_) => "filter",
             NodeKind::Dedup(_) => "dedupe",
+            NodeKind::Group(_) => "group",
             NodeKind::Http(_) | NodeKind::Apprise(_) => "target",
         }
     }
@@ -805,5 +837,58 @@ mod tests {
         });
         // Both URLs and a key, a bad key, and a filter handle on a dedupe node.
         assert_eq!(bad.validate().len(), 3, "{:?}", bad.validate());
+    }
+
+    #[test]
+    fn routes_through_groups() {
+        let g: Graph = serde_json::from_value(json!({
+            "nodes": [
+                {"id": "src", "type": "source", "data": {"name": "Tramline"}},
+                {"id": "hi", "type": "filter", "data": {"name": "High", "conditions": [
+                    {"field": "priority", "op": "gte", "value": 4}
+                ]}},
+                {"id": "phones", "type": "group", "data": {"name": "Phones"}},
+                {"id": "everyone", "type": "group", "data": {"name": "Everyone"}},
+                {"id": "a", "type": "http", "data": {"name": "A", "url": "http://a"}},
+                {"id": "b", "type": "http", "data": {"name": "B", "url": "http://b"}},
+                {"id": "c", "type": "http", "data": {"name": "C", "url": "http://c"}},
+                {"id": "d", "type": "http", "data": {"name": "D", "url": "http://d"}}
+            ],
+            "edges": [
+                {"id": "e1", "source": "src", "target": "hi"},
+                {"id": "e2", "source": "hi", "target": "phones", "sourceHandle": "match"},
+                {"id": "e3", "source": "hi", "target": "everyone", "sourceHandle": "else"},
+                {"id": "e4", "source": "phones", "target": "a"},
+                {"id": "e5", "source": "phones", "target": "b"},
+                {"id": "e6", "source": "everyone", "target": "phones"},
+                {"id": "e7", "source": "everyone", "target": "c"},
+                {"id": "e8", "source": "phones", "target": "everyone"},
+                {"id": "e9", "source": "d", "target": "phones", "sourceHandle": "fallback"},
+                {"id": "e10", "source": "a", "target": "everyone", "sourceHandle": "fallback"}
+            ]
+        }))
+        .unwrap();
+        assert!(g.validate().is_empty(), "{:?}", g.validate());
+        let route = |n| g.route("src", &n, |_| false).targets;
+        // Groups that contain each other still reach each target once.
+        assert_eq!(route(note(5, &[])), ["a", "b", "c"]);
+        assert_eq!(route(note(2, &[])), ["c", "a", "b"]);
+        assert_eq!(g.fallbacks("d"), ["a", "b", "c"]);
+        // A target never falls back to itself through a group.
+        assert_eq!(g.fallbacks("a"), ["c", "b"]);
+
+        let mut bad = g.clone();
+        for (id, source, target, handle) in [
+            ("x1", "phones", "hi", None), // a group leads only to targets and groups
+            ("x2", "phones", "a", Some("fallback")), // and has no handles
+        ] {
+            bad.edges.push(Edge {
+                id: id.into(),
+                source: source.into(),
+                target: target.into(),
+                source_handle: handle.map(Into::into),
+            });
+        }
+        assert_eq!(bad.validate().len(), 2, "{:?}", bad.validate());
     }
 }

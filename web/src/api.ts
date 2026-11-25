@@ -87,9 +87,13 @@ export type AppriseData = {
 };
 export type TargetData = HttpData | AppriseData;
 
-export type NodeType = "source" | "filter" | "dedup" | "http" | "apprise";
-export type NodeData = SourceData | FilterData | DedupData | HttpData | AppriseData;
+export type GroupData = { name: string };
+
+export type NodeType = "source" | "filter" | "dedup" | "group" | "http" | "apprise";
+export type NodeData = SourceData | FilterData | DedupData | GroupData | HttpData | AppriseData;
 export const isTarget = (type: string | undefined): type is "http" | "apprise" => type === "http" || type === "apprise";
+/** A target, or a group of them: what a group or a fallback edge may lead to. */
+export const delivers = (type: string | undefined) => isTarget(type) || type === "group";
 export type GraphNode = {
   id: string;
   type: NodeType;

@@ -1,4 +1,4 @@
-import type { AppriseData, DedupData, FilterData, QuietHours, RetryPolicy, SourceData, TargetData } from "../api";
+import type { AppriseData, DedupData, FilterData, GroupData, QuietHours, RetryPolicy, SourceData, TargetData } from "../api";
 
 export const defaultRetry: RetryPolicy = {
   maxAttempts: 8,
@@ -156,6 +156,7 @@ export const presets: Preset[] = [
 ];
 
 export const newSource = (): SourceData => ({ name: "New source" });
+export const newGroup = (): GroupData => ({ name: "Group" });
 export const newDedup = (): DedupData => ({
   name: "Dedupe",
   key: "{{ n.source.id }}|{{ n.title }}|{{ n.body }}",

@@ -20,6 +20,7 @@
   --node-http: #4fbf7f;
   --node-dedup: #4fc3c3;
   --node-apprise: #e87fb0;
+  --node-group: #d9875f;
   --held: #b99af0;
   --minimap-mask: rgba(10, 12, 16, 0.6);
   --radius: 8px;
@@ -164,6 +165,7 @@ main { flex: 1; min-height: 0; }
 .node-http { --kind: var(--node-http); padding-bottom: 1.5rem; }
 .node-apprise { --kind: var(--node-apprise); padding-bottom: 1.5rem; }
 .node-dedup { --kind: var(--node-dedup); padding-right: 4.2rem; max-width: 18rem; }
+.node-group { --kind: var(--node-group); }
 .node-meta.quiet { color: var(--held); }
 .node-kind { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--kind); font-weight: 600; display: flex; align-items: center; gap: 0.3rem; }
 .node-title { font-weight: 600; margin: 0.1rem 0 0.2rem; word-break: break-word; }

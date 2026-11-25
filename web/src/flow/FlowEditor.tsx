@@ -1,4 +1,4 @@
-// The routing graph editor: sources → filters → targets, with fallbacks between targets.
+// The routing graph editor: sources → filters → groups → targets, with fallbacks between targets.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -19,10 +19,10 @@ import {
   type Node,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { api, ApiError, describe, isTarget, type Graph, type GraphNode, type GraphResponse, type NodeType } from "../api";
+import { api, ApiError, delivers, describe, isTarget, type Graph, type GraphNode, type GraphResponse, type NodeType } from "../api";
 import { Inspector } from "./Inspector";
 import { nodeTypes } from "./nodes";
-import { newDedup, newFilter, newSource, presets } from "./presets";
+import { newDedup, newFilter, newGroup, newSource, presets } from "./presets";
 
 type AnyNode = Node<Record<string, unknown>, NodeType>;
 
@@ -110,7 +110,8 @@ function Editor() {
       const from = nodes.find((n) => n.id === c.source);
       const to = nodes.find((n) => n.id === c.target);
       if (!from || !to || from.id === to.id || to.type === "source") return false;
-      if (isTarget(from.type)) return isTarget(to.type) && c.sourceHandle === "fallback";
+      if (isTarget(from.type)) return delivers(to.type) && c.sourceHandle === "fallback";
+      if (from.type === "group") return delivers(to.type);
       return true;
     },
     [nodes],
@@ -178,6 +179,7 @@ function Editor() {
         <button onClick={() => add("source", newSource())}>+ Source</button>
         <button onClick={() => add("filter", newFilter())}>+ Filter</button>
         <button onClick={() => add("dedup", newDedup())}>+ Dedupe</button>
+        <button onClick={() => add("group", newGroup())}>+ Group</button>
         <div className="menu-wrap">
           <button onClick={() => setAddMenu((v) => !v)}>+ Target ▾</button>
           {addMenu && (
@@ -251,7 +253,8 @@ function Editor() {
                 Add a <strong>source</strong> for each project that sends notifications, then <strong>targets</strong>{" "}
                 to deliver to, and connect them. Put <strong>filters</strong> in between to route by priority, tags or
                 anything in the notification, and <strong>dedupe</strong> nodes to let repeats through only once in a
-                while. Drag from a target's bottom handle to another target to add a fallback.
+                while. Bundle targets in a <strong>group</strong> to connect them all at once. Drag from a target's
+                bottom handle to another target or a group to add a fallback.
               </p>
             </div>
           )}

@@ -8,6 +8,7 @@ import {
   type AppriseData,
   type DedupData,
   type FilterData,
+  type GroupData,
   type HttpData,
   type NodeData,
   type NodeType,
@@ -36,6 +37,7 @@ export function Inspector(props: Props) {
       {props.type === "source" && <SourceForm {...props} data={props.data as SourceData} />}
       {props.type === "filter" && <FilterForm {...props} data={props.data as FilterData} />}
       {props.type === "dedup" && <DedupForm {...props} data={props.data as DedupData} />}
+      {props.type === "group" && <GroupForm {...props} data={props.data as GroupData} />}
       {props.type === "http" && <HttpForm {...props} data={props.data as HttpData} />}
       {props.type === "apprise" && <AppriseForm {...props} data={props.data as AppriseData} />}
       <div className="inspector-footer">
@@ -290,6 +292,22 @@ function DedupForm({ data, onChange }: Props & { data: DedupData }) {
         A repeat is let through again once {formatDuration(data.windowSecs)} have passed since the last one that went
         through. "Send again" in the history ignores dedupe.
       </p>
+    </>
+  );
+}
+
+// ---- Group -------------------------------------------------------------------------------------
+
+function GroupForm({ data, onChange }: Props & { data: GroupData }) {
+  return (
+    <>
+      <h2>Group</h2>
+      <p className="muted">
+        Sends everything that reaches it on to every target and group it connects to, so sources and filters need one
+        edge to reach them all. A target's <span className="tag-fallback">fallback</span> can lead to a group too. A
+        notification reaching the same target by two paths is still delivered to it once.
+      </p>
+      <Name value={data.name} onChange={(name) => onChange({ ...data, name })} />
     </>
   );
 }

@@ -27,6 +27,12 @@ Published as the public repo https://github.com/Moudoux/switchboard (MIT licence
 - **0.2.1:** `index.html` is served with `Cache-Control: no-cache`, and `/assets/*` with `immutable`. Before this, a browser could keep showing the previous GUI for hours after an update, which happened on the Pi with 0.2.0. Also: the Dockerfile's cargo registry cache is `sharing=locked`, because the parallel amd64 and arm64 builds broke each other's crate unpacking on a cold cache.
 - **Not verified:** the GUI in a browser, and a real Apprise server. Loopback TCP on the Arch machine timed out on 2026-11-25, even for `python -m http.server` plus curl outside the sandbox, so neither a test server nor headless Chrome could be reached. It was likely OpenSnitch or a firewall rule. `just check` passes, including the typed GUI build.
 
+### Version 0.3.0: group node (2026-11-25, released by CI)
+
+- **Group node** (`group` in the graph, `GroupNode` in `graph.rs`): passes everything on to every target or group on its single output, which may lead only to targets and groups. A target's `fallback` may lead to a group; `Graph::fallbacks` expands groups (cycles and the failing target itself are skipped). Same rules in `isValidConnection`. The node card counts its outgoing connections with `useNodeConnections`.
+- **Verified:** `just check` (test `routes_through_groups`), and end to end on a scratch database: source → group → two dead targets, the first falling back to a second group of two; all four deliveries were created, the last two as fallbacks. A group → source edge is rejected on save.
+- **Not verified:** the GUI in a browser (node card colour `#d9875f`, inspector, connecting handles).
+
 ## Next steps, in order
 
 0. **Check 0.2.0 by hand once loopback works:** add a dedupe node and an Apprise target in the GUI, turn on quiet hours, and look at the inspector, the node cards and the history filter in light and dark mode. Run an Apprise API container (`caronc/apprise`) and use **Send a test notification** with an `ntfy://` URL.

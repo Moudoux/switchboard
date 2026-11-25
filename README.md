@@ -78,10 +78,11 @@ echo "nightly backup failed" | curl -X POST https://notify.example.lan/api/v1/no
 
 ## Routing
 
-- **Source:** where notifications come in. Connect it to filters or targets.
+- **Source:** where notifications come in. Connect it to filters, groups or targets.
 - **Filter:** a list of conditions, all or any of which must match. A notification leaves through `match` when it passes and `else` when it doesn't. Fields are `title`, `body`, `priority`, `tags`, `source`, `url` and `data.<path>`, such as `data.printer.bed`. Text comparisons ignore case, and `tags contains x` means one of the tags is `x`.
 - **Dedupe:** works out a key for each notification from a template (by default the source, title and body). The first notification with a key leaves through `new`. One with the same key leaves through `duplicate` while the last one that went through `new` is less than the window old. Leave `duplicate` unconnected to drop repeats. What a dedupe node has seen is kept in the database, so it survives restarts. A notification that only a dedupe node stopped is shown as a **duplicate** in the history, with a link to the original.
-- **HTTP target:** sends a request. Connect its bottom `fallback` handle to other targets to try them once it gives up.
+- **Group:** bundles targets. Everything that reaches a group goes on to every target and group connected to its output, so a source or filter needs one edge to reach them all, and a target's `fallback` can lead to a whole group. A group's output connects only to targets and groups.
+- **HTTP target:** sends a request. Connect its bottom `fallback` handle to other targets or groups to try them once it gives up.
 - **Apprise target:** sends to an Apprise API server, either to a list of [Apprise URLs](https://github.com/caronc/apprise/wiki) (`POST /notify/`) or to a configuration saved on the server by its key, with an optional tag (`POST /notify/<key>`). The title and body are templates. Priority 4 is sent as Apprise's `warning`, 5 as `failure`, and the rest as `info`. Apprise answers `424` when a service failed or no URL matched the tag, and that is retried. A retry notifies every URL again, so give a service its own target when duplicates matter.
 
 A notification reaching the same target by two paths is delivered to it once.
