@@ -64,6 +64,8 @@ curl -X POST https://notify.example.lan/api/v1/notify \
 | `url`      | string          | A link the notification is about.                           |
 | `data`     | object          | Anything else, for filters and templates.                   |
 
+[SENDING-NOTIFICATIONS.md](SENDING-NOTIFICATIONS.md) is a self-contained guide to sending, with examples in Python, Node and shell, written so that an agent or a script's author can follow it without reading anything else.
+
 Unknown fields are rejected, so typos show up straight away. The answer is `202 {"id": "..."}`, or `400`/`401` with `{"error": "..."}`.
 
 For shell scripts, plain text works too:
