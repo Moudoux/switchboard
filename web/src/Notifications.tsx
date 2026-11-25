@@ -62,9 +62,13 @@ export function Notifications() {
       .catch(() => {});
   }, []);
 
-  const fetchPage = useCallback(async (before?: number) => {
+  // Pages continue after the last row's time and id, since several can share a millisecond.
+  const fetchPage = useCallback(async (after?: Notification) => {
     const q = new URLSearchParams({ limit: String(PAGE) });
-    if (before) q.set("before", String(before));
+    if (after) {
+      q.set("before", String(after.receivedAt));
+      q.set("beforeId", after.id);
+    }
     if (params.current.status) q.set("status", params.current.status);
     if (params.current.target) q.set("target", params.current.target);
     if (params.current.query.trim()) q.set("q", params.current.query.trim());
@@ -163,7 +167,7 @@ export function Notifications() {
           <button
             className="wide"
             onClick={async () => {
-              const page = await fetchPage(items[items.length - 1]?.receivedAt);
+              const page = await fetchPage(items[items.length - 1]);
               setItems((xs) => [...xs, ...page]);
               setMore(page.length === PAGE);
             }}

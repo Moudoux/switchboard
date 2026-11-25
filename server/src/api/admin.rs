@@ -161,8 +161,11 @@ async fn list_targets(State(state): State<AppState>) -> ApiResult<Json<Value>> {
 #[derive(Deserialize)]
 struct ListQuery {
     limit: Option<i64>,
-    /// `receivedAt` of the last row of the previous page.
+    /// `receivedAt` and `id` of the last row of the previous page. Both are needed: several
+    /// notifications can arrive in the same millisecond.
     before: Option<i64>,
+    #[serde(rename = "beforeId")]
+    before_id: Option<String>,
     source: Option<String>,
     /// Only notifications with a delivery to this target; the status counts are then its own.
     target: Option<String>,
@@ -228,7 +231,9 @@ async fn list_notifications(
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let target = q.target.as_deref().filter(|t| !t.is_empty());
     let summary = summary(target.is_some());
-    let mut sql = format!("SELECT n.*, {summary} FROM notifications n WHERE n.received_at < ?1");
+    let mut sql = format!(
+        "SELECT n.*, {summary} FROM notifications n WHERE (n.received_at < ?1 OR (n.received_at = ?1 AND n.id < ?6))"
+    );
     if q.source.is_some() {
         sql.push_str(" AND n.source_id = ?2");
     }
@@ -250,7 +255,7 @@ async fn list_notifications(
         Some("duplicate") => "WHERE status = 'duplicate'",
         _ => "",
     };
-    let sql = format!("SELECT * FROM ({sql}) {outer} ORDER BY received_at DESC LIMIT ?4");
+    let sql = format!("SELECT * FROM ({sql}) {outer} ORDER BY received_at DESC, id DESC LIMIT ?4");
     // `sql` is built from constant strings only; the user's values are bound.
     let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(q.before.unwrap_or(i64::MAX))
@@ -258,6 +263,8 @@ async fn list_notifications(
         .bind(q.q.as_ref().map(|s| format!("%{s}%")))
         .bind(limit)
         .bind(target)
+        // An empty id matches nothing, so without one the page starts strictly before `before`.
+        .bind(q.before_id.as_deref().unwrap_or(""))
         .fetch_all(&state.db)
         .await?;
     Ok(Json(json!(
@@ -481,6 +488,7 @@ mod tests {
         let q = ListQuery {
             limit: None,
             before: None,
+            before_id: None,
             source: None,
             target: target.map(str::to_string),
             status: status.map(str::to_string),
@@ -612,6 +620,37 @@ mod tests {
                 .iter()
                 .any(|t| t["name"] == "Night" && t["inGraph"] == false)
         );
+
+        // Paging one at a time sees every notification, even when they share a millisecond.
+        sqlx::query("UPDATE notifications SET received_at = 1000")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let total = list(&state, None, None).await.len();
+        let mut seen = Vec::new();
+        let mut cursor: Option<(i64, String)> = None;
+        loop {
+            let q = ListQuery {
+                limit: Some(1),
+                before: cursor.as_ref().map(|c| c.0),
+                before_id: cursor.as_ref().map(|c| c.1.clone()),
+                source: None,
+                target: None,
+                status: None,
+                q: None,
+            };
+            let Json(page) = list_notifications(State(state.clone()), Query(q))
+                .await
+                .unwrap_or_else(|_| panic!("listing failed"));
+            let Some(row) = page.as_array().unwrap().first() else {
+                break;
+            };
+            let id = row["id"].as_str().unwrap().to_string();
+            cursor = Some((row["receivedAt"].as_i64().unwrap(), id.clone()));
+            seen.push(id);
+        }
+        assert_eq!(seen.len(), total);
+        assert!(seen.windows(2).all(|w| w[0] > w[1]), "newest first, by id");
 
         state.db.close().await;
         for suffix in ["", "-wal", "-shm"] {
