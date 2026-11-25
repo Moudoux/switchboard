@@ -27,7 +27,9 @@ WORKDIR /src/server
 COPY server/ ./
 # The image's Rust is the build's Rust; the toolchain file is for development and CI.
 RUN rm -f rust-toolchain.toml
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+# The registry cache is shared by both architectures, which build in parallel; `locked` stops them
+# unpacking the same crate at once ("failed to unpack package ... File exists").
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/server/target,id=switchboard-target-${TARGETARCH} \
     target="$(cat /rust-target)" gcc="$(cat /gcc)" \
  && env_target="$(echo "$target" | tr a-z- A-Z_)" \
