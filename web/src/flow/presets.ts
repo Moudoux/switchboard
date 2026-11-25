@@ -1,4 +1,4 @@
-import type { FilterData, HttpData, RetryPolicy, SourceData } from "../api";
+import type { AppriseData, DedupData, FilterData, QuietHours, RetryPolicy, SourceData, TargetData } from "../api";
 
 export const defaultRetry: RetryPolicy = {
   maxAttempts: 8,
@@ -7,17 +7,30 @@ export const defaultRetry: RetryPolicy = {
   giveUpAfterSecs: 6 * 3600,
 };
 
+/** Off, but ready to switch on: nights in the browser's time zone, urgent ones still through. */
+export const defaultQuietHours = (): QuietHours => ({
+  enabled: false,
+  start: "22:00",
+  end: "07:00",
+  days: [0, 1, 2, 3, 4, 5, 6],
+  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? "",
+  action: "hold",
+  minPriority: 5,
+});
+
 export type Preset = {
   id: string;
+  type: "http" | "apprise";
   label: string;
   description: string;
-  make: () => HttpData;
+  make: () => TargetData;
 };
 
 // Templates are MiniJinja (Jinja2). The notification is `n`; see the template help in the inspector.
 export const presets: Preset[] = [
   {
     id: "webhook",
+    type: "http",
     label: "Webhook",
     description: "POST the whole notification as JSON to any URL",
     make: () => ({
@@ -28,11 +41,13 @@ export const presets: Preset[] = [
       body: "{{ n|tojson }}",
       timeoutSecs: 10,
       retry: { ...defaultRetry },
+      quietHours: defaultQuietHours(),
       preset: "webhook",
     }),
   },
   {
     id: "discord",
+    type: "http",
     label: "Discord",
     description: "A message with an embed, coloured by priority, through a channel webhook",
     make: () => ({
@@ -54,11 +69,13 @@ export const presets: Preset[] = [
 }`,
       timeoutSecs: 10,
       retry: { ...defaultRetry },
+      quietHours: defaultQuietHours(),
       preset: "discord",
     }),
   },
   {
     id: "claude-monitor",
+    type: "http",
     label: "Claude Monitor",
     description: "Show it on the Claude Monitor's 320×240 screen",
     make: () => ({
@@ -77,12 +94,38 @@ export const presets: Preset[] = [
 }`,
       timeoutSecs: 10,
       retry: { maxAttempts: 5, initialBackoffSecs: 10, maxBackoffSecs: 120, giveUpAfterSecs: 1800 },
+      quietHours: defaultQuietHours(),
       preset: "claude-monitor",
+    }),
+  },
+  {
+    id: "apprise",
+    type: "apprise",
+    label: "Apprise",
+    description: "Telegram, ntfy, email, Pushover and 100+ more, through an Apprise API server",
+    make: (): AppriseData => ({
+      name: "Apprise",
+      url: "http://apprise:8000",
+      urls: [""],
+      key: "",
+      tag: "",
+      title: "{{ n.title or n.source.name }}",
+      body: "{{ n.text }}",
+      format: "text",
+      headers: [],
+      timeoutSecs: 30,
+      retry: { ...defaultRetry },
+      quietHours: defaultQuietHours(),
     }),
   },
 ];
 
 export const newSource = (): SourceData => ({ name: "New source" });
+export const newDedup = (): DedupData => ({
+  name: "Dedupe",
+  key: "{{ n.source.id }}|{{ n.title }}|{{ n.body }}",
+  windowSecs: 600,
+});
 export const newFilter = (): FilterData => ({
   name: "Filter",
   mode: "all",

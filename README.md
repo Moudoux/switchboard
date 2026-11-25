@@ -16,10 +16,13 @@ A sender only ever needs one URL and one token. Changing where notifications end
 - **One ingest endpoint:** `POST /api/v1/notify` with JSON, or plain text for quick shell use. Each source has its own token.
 - **Answers at once:** a notification is stored in SQLite and acknowledged with `202 Accepted` in about a millisecond. Routing and delivery happen afterwards, so a sender is never held up by a slow or broken target.
 - **Routing graph:** draw sources, filters and targets in the GUI with [React Flow](https://reactflow.dev). Filters route on priority, tags, title, body, source or anything in the notification's `data`, with a `match` and an `else` output.
+- **Deduplication:** a dedupe node lets a notification through once and sends repeats with the same key down a `duplicate` branch, or nowhere, for a time window.
+- **Quiet hours:** each target can hold its notifications until morning, or drop them, with urgent ones still going through. Times follow the target's time zone and daylight saving.
+- **Apprise:** a native target for an [Apprise API](https://github.com/caronc/apprise-api) server reaches Telegram, ntfy, email, Pushover, Matrix and the 100+ other services Apprise supports.
 - **Flexible HTTP targets:** the URL, headers and body are [Jinja templates](https://docs.rs/minijinja), so one target type covers webhooks, Discord, ntfy, Home Assistant, Gotify, Slack and most other services. Presets for a generic webhook, Discord and the Claude Monitor display are built in.
 - **Retries and fallbacks:** each target retries with exponential backoff and jitter, honours `Retry-After`, and gives up after a number of attempts or a length of time. When a target gives up, the notification goes on to its fallback targets.
 - **Survives restarts:** everything is in SQLite. After a crash or restart, unrouted notifications are routed and interrupted deliveries are sent again.
-- **History:** every notification, delivery and attempt, with HTTP status, error and response, live in the GUI. Redeliver a notification or retry a single delivery with one click.
+- **History:** every notification, delivery and attempt, with HTTP status, error and response, live in the GUI. Filter it by target, status or text. Redeliver a notification or retry a single delivery with one click.
 - **Passkey-only sign-in:** the GUI has no passwords. The first passkey is registered through a one-time link printed in the server's terminal.
 - **Small:** one Rust binary that also serves the GUI, and a multi-arch image for `linux/amd64` and `linux/arm64` (Raspberry Pi).
 
@@ -75,9 +78,15 @@ echo "nightly backup failed" | curl -X POST https://notify.example.lan/api/v1/no
 
 - **Source:** where notifications come in. Connect it to filters or targets.
 - **Filter:** a list of conditions, all or any of which must match. A notification leaves through `match` when it passes and `else` when it doesn't. Fields are `title`, `body`, `priority`, `tags`, `source`, `url` and `data.<path>`, such as `data.printer.bed`. Text comparisons ignore case, and `tags contains x` means one of the tags is `x`.
+- **Dedupe:** works out a key for each notification from a template (by default the source, title and body). The first notification with a key leaves through `new`. One with the same key leaves through `duplicate` while the last one that went through `new` is less than the window old. Leave `duplicate` unconnected to drop repeats. What a dedupe node has seen is kept in the database, so it survives restarts. A notification that only a dedupe node stopped is shown as a **duplicate** in the history, with a link to the original.
 - **HTTP target:** sends a request. Connect its bottom `fallback` handle to other targets to try them once it gives up.
+- **Apprise target:** sends to an Apprise API server, either to a list of [Apprise URLs](https://github.com/caronc/apprise/wiki) (`POST /notify/`) or to a configuration saved on the server by its key, with an optional tag (`POST /notify/<key>`). The title and body are templates. Priority 4 is sent as Apprise's `warning`, 5 as `failure`, and the rest as `info`. Apprise answers `424` when a service failed or no URL matched the tag, and that is retried. A retry notifies every URL again, so give a service its own target when duplicates matter.
 
-A notification reaching the same target by two paths is delivered to it once. Saving the graph applies it to new notifications at once; deliveries already queued keep their target but use its current settings.
+A notification reaching the same target by two paths is delivered to it once.
+
+### Quiet hours
+
+Every target can have quiet hours: a daily period, such as 22:00 to 07:00, on the days you pick, in an IANA time zone (the GUI fills in your browser's; empty uses the server's `TZ`). A period whose end isn't after its start runs past midnight, and belongs to the day it starts on. During quiet hours a new delivery is either **held** until they end or **dropped** (shown as *skipped*). Notifications of priority 5, or 4 and 5, can still go through. A held delivery's give-up time counts from the end of quiet hours. Quiet hours are checked when a delivery is created, and fallback targets check their own. **Send again** and **Retry** in the history send at once, ignoring dedupe nodes and quiet hours. Saving the graph applies it to new notifications at once; deliveries already queued keep their target but use its current settings.
 
 ### Templates
 
@@ -112,6 +121,7 @@ A failed attempt is retried when it was a network error, a timeout, or HTTP 408,
 | `SWITCHBOARD_RETENTION_DAYS` | `30`                    | Notifications older than this are deleted, unless still being delivered. |
 | `SWITCHBOARD_CONCURRENCY`    | `16`                    | Deliveries sent at the same time.                                       |
 | `SWITCHBOARD_COOKIE_SECURE`  | `true`                  | Set `false` only to use the GUI over plain HTTP on a hostname other than localhost. Passkeys won't work there anyway. |
+| `TZ`                         | UTC                     | The time zone for quiet hours that don't name one, such as `Europe/Stockholm`. |
 | `RUST_LOG`                   | `switchboard=info`      | Log level.                                                              |
 
 ## Development
@@ -131,7 +141,8 @@ Open http://localhost:5173, then run `just enroll` for the first passkey's link.
 |------------------------------|---------------------------------------------------------------|
 | `server/src/api/ingest.rs`   | The ingest endpoint                                           |
 | `server/src/graph.rs`        | The graph's types, validation, filters and routing            |
-| `server/src/engine/`         | The router, the delivery worker with retries and fallbacks, and HTTP sending |
+| `server/src/engine/`         | The router with dedupe, the delivery worker with retries and fallbacks, and HTTP and Apprise sending |
+| `server/src/quiet_hours.rs`  | Quiet hours                                                   |
 | `server/src/api/auth.rs`     | Passkeys, sessions and `enroll`                               |
 | `server/src/api/admin.rs`    | The GUI's API                                                 |
 | `server/migrations/`         | The SQLite schema                                             |

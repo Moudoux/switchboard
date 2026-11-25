@@ -16,6 +16,8 @@ struct Delivery {
     target_id: String,
     attempts: i64,
     created_at: i64,
+    /// When quiet hours held it back, the time they ended; the give-up time counts from then.
+    held_until: Option<i64>,
 }
 
 /// The delivery worker: sends due deliveries, at most `concurrency` at once.
@@ -114,10 +116,12 @@ async fn attempt_inner(state: &AppState, id: &str) -> sqlx::Result<()> {
             "failed",
             Some("the target was removed from the graph"),
             &[],
+            None,
         )
         .await;
     };
     let outcome = send::send(&state.http, target, &n.template_value()).await;
+    let retry = target.retry();
 
     sqlx::query(
         "INSERT INTO attempts (delivery_id, started_at, duration_ms, ok, http_status, error, response) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -136,21 +140,30 @@ async fn attempt_inner(state: &AppState, id: &str) -> sqlx::Result<()> {
     if outcome.ok {
         tracing::info!(
             notification = d.notification_id,
-            target = target.name,
+            target = target.name(),
             attempts,
             "delivered"
         );
-        return finish(state, &Delivery { attempts, ..d }, "delivered", None, &[]).await;
+        return finish(
+            state,
+            &Delivery { attempts, ..d },
+            "delivered",
+            None,
+            &[],
+            None,
+        )
+        .await;
     }
     let error = outcome.error.as_deref().unwrap_or("failed");
     let now = now_ms();
     if outcome.retryable
-        && let Some(delay) = retry_delay(&target.retry, attempts, outcome.retry_after)
-        && now + delay as i64 <= d.created_at + target.retry.give_up_after_secs as i64 * 1000
+        && let Some(delay) = retry_delay(retry, attempts, outcome.retry_after)
+        && now + delay as i64
+            <= d.held_until.unwrap_or(d.created_at) + retry.give_up_after_secs as i64 * 1000
     {
         tracing::warn!(
             notification = d.notification_id,
-            target = target.name,
+            target = target.name(),
             attempts,
             error,
             "retrying in {}s",
@@ -172,7 +185,7 @@ async fn attempt_inner(state: &AppState, id: &str) -> sqlx::Result<()> {
     let fallbacks = graph.fallbacks(&d.target_id);
     tracing::warn!(
         notification = d.notification_id,
-        target = target.name,
+        target = target.name(),
         attempts,
         error,
         fallbacks = fallbacks.len(),
@@ -184,17 +197,20 @@ async fn attempt_inner(state: &AppState, id: &str) -> sqlx::Result<()> {
         "failed",
         Some(error),
         &fallbacks,
+        Some(n.priority),
     )
     .await
 }
 
-/// Marks a delivery done and creates its fallback deliveries, in one transaction.
+/// Marks a delivery done and creates its fallback deliveries, in one transaction. The fallbacks'
+/// quiet hours apply for a notification of `priority`.
 async fn finish(
     state: &AppState,
     d: &Delivery,
     status: &str,
     error: Option<&str>,
     fallbacks: &[String],
+    priority: Option<i64>,
 ) -> sqlx::Result<()> {
     let now = now_ms();
     let mut tx = state.db.begin().await?;
@@ -209,7 +225,15 @@ async fn finish(
     .bind(&d.id)
     .execute(&mut *tx)
     .await?;
-    super::create_deliveries(state, &mut tx, &d.notification_id, fallbacks, Some(&d.id)).await?;
+    super::create_deliveries(
+        state,
+        &mut tx,
+        &d.notification_id,
+        fallbacks,
+        Some(&d.id),
+        priority,
+    )
+    .await?;
     tx.commit().await?;
     state.emit("delivery", &d.notification_id);
     Ok(())

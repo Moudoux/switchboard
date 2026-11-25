@@ -6,6 +6,7 @@ mod db;
 mod engine;
 mod graph;
 mod notification;
+mod quiet_hours;
 mod state;
 mod template;
 mod util;

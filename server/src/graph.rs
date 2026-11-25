@@ -6,8 +6,10 @@
 //! - `source` nodes are where notifications come in. Each has its own token.
 //! - `filter` nodes test a notification. Edges leave by the `match` handle (or no handle) when it
 //!   passes, and by the `else` handle when it doesn't.
-//! - `http` nodes are targets. Edges leaving by the `fallback` handle go to the targets tried
-//!   once this target has given up.
+//! - `dedup` nodes let a notification through `new` the first time its key is seen within a
+//!   window, and through `duplicate` after that. What they've seen is kept in SQLite.
+//! - `http` and `apprise` nodes are targets. Edges leaving by the `fallback` handle go to the
+//!   targets tried once this target has given up.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -16,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::notification::Notification;
+use crate::quiet_hours::QuietHours;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Graph {
@@ -37,7 +40,9 @@ pub struct Node {
 pub enum NodeKind {
     Source(SourceNode),
     Filter(FilterNode),
+    Dedup(DedupNode),
     Http(HttpTarget),
+    Apprise(AppriseTarget),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +58,26 @@ pub struct FilterNode {
     pub mode: MatchMode,
     #[serde(default)]
     pub conditions: Vec<Condition>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DedupNode {
+    pub name: String,
+    /// A template; notifications that render the same key are duplicates of each other.
+    #[serde(default = "default_dedup_key")]
+    pub key: String,
+    /// A notification is a duplicate when one with the same key passed less than this long ago.
+    #[serde(default = "default_dedup_window")]
+    pub window_secs: u64,
+}
+
+fn default_dedup_key() -> String {
+    "{{ n.source.id }}|{{ n.title }}|{{ n.body }}".into()
+}
+
+fn default_dedup_window() -> u64 {
+    600
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +130,107 @@ pub struct HttpTarget {
     pub timeout_secs: u64,
     #[serde(default)]
     pub retry: RetryPolicy,
+    #[serde(default)]
+    pub quiet_hours: QuietHours,
+}
+
+/// Sends through an [Apprise API](https://github.com/caronc/apprise-api) server, which reaches
+/// the services Apprise supports (Telegram, ntfy, email, Pushover, Matrix, ...).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppriseTarget {
+    pub name: String,
+    /// The Apprise API server, such as `http://apprise:8000`.
+    pub url: String,
+    /// Apprise URLs to notify (stateless), such as `tgram://bot/chat`. Used when `key` is empty.
+    #[serde(default)]
+    pub urls: Vec<String>,
+    /// A configuration saved on the server (stateful), notified as `/notify/<key>`.
+    #[serde(default)]
+    pub key: String,
+    /// With a key: which of its URLs to notify. A comma is OR, a space is AND; `all` is every one.
+    #[serde(default)]
+    pub tag: String,
+    #[serde(default = "default_apprise_title")]
+    pub title: String,
+    #[serde(default = "default_apprise_body")]
+    pub body: String,
+    #[serde(default)]
+    pub format: AppriseFormat,
+    /// Extra request headers, such as Authorization for a server behind a proxy. Values are templates.
+    #[serde(default)]
+    pub headers: Vec<Header>,
+    #[serde(default = "default_timeout")]
+    pub timeout_secs: u64,
+    #[serde(default)]
+    pub retry: RetryPolicy,
+    #[serde(default)]
+    pub quiet_hours: QuietHours,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppriseFormat {
+    #[default]
+    Text,
+    Markdown,
+    Html,
+}
+
+fn default_apprise_title() -> String {
+    "{{ n.title or n.source.name }}".into()
+}
+
+fn default_apprise_body() -> String {
+    "{{ n.text }}".into()
+}
+
+/// A target node of either kind.
+#[derive(Debug, Clone, Copy)]
+pub enum Target<'a> {
+    Http(&'a HttpTarget),
+    Apprise(&'a AppriseTarget),
+}
+
+impl<'a> Target<'a> {
+    pub fn name(self) -> &'a str {
+        match self {
+            Target::Http(t) => &t.name,
+            Target::Apprise(t) => &t.name,
+        }
+    }
+
+    pub fn retry(self) -> &'a RetryPolicy {
+        match self {
+            Target::Http(t) => &t.retry,
+            Target::Apprise(t) => &t.retry,
+        }
+    }
+
+    pub fn quiet_hours(self) -> &'a QuietHours {
+        match self {
+            Target::Http(t) => &t.quiet_hours,
+            Target::Apprise(t) => &t.quiet_hours,
+        }
+    }
+
+    pub fn timeout_secs(self) -> u64 {
+        match self {
+            Target::Http(t) => t.timeout_secs,
+            Target::Apprise(t) => t.timeout_secs,
+        }
+    }
+}
+
+/// Where a notification goes, and what the dedupe nodes on its way decided.
+#[derive(Debug, Default, PartialEq)]
+pub struct Routing {
+    /// Targets, in graph order, each once.
+    pub targets: Vec<String>,
+    /// Dedupe nodes it passed as new; their keys are recorded.
+    pub passed: Vec<String>,
+    /// Dedupe nodes that found it a duplicate.
+    pub duplicates: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +283,8 @@ pub struct Edge {
 pub const HANDLE_MATCH: &str = "match";
 pub const HANDLE_ELSE: &str = "else";
 pub const HANDLE_FALLBACK: &str = "fallback";
+pub const HANDLE_NEW: &str = "new";
+pub const HANDLE_DUPLICATE: &str = "duplicate";
 
 impl Graph {
     pub fn node(&self, id: &str) -> Option<&Node> {
@@ -170,20 +298,35 @@ impl Graph {
         }
     }
 
-    pub fn target(&self, id: &str) -> Option<&HttpTarget> {
-        match self.node(id).map(|n| &n.kind) {
-            Some(NodeKind::Http(t)) => Some(t),
+    pub fn target(&self, id: &str) -> Option<Target<'_>> {
+        self.node(id).and_then(|n| n.kind.as_target())
+    }
+
+    pub fn targets(&self) -> impl Iterator<Item = (&str, Target<'_>)> {
+        self.nodes
+            .iter()
+            .filter_map(|n| Some((n.id.as_str(), n.kind.as_target()?)))
+    }
+
+    pub fn dedup_nodes(&self) -> impl Iterator<Item = (&str, &DedupNode)> {
+        self.nodes.iter().filter_map(|n| match &n.kind {
+            NodeKind::Dedup(d) => Some((n.id.as_str(), d)),
             _ => None,
-        }
+        })
     }
 
     fn edges_from<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a Edge> + 'a {
         self.edges.iter().filter(move |e| e.source == id)
     }
 
-    /// The targets a notification from `source_id` goes to, in graph order, each once.
-    pub fn route(&self, source_id: &str, n: &Notification) -> Vec<String> {
-        let mut targets = Vec::new();
+    /// Where a notification from `source_id` goes. `is_duplicate` answers for a dedupe node, by id.
+    pub fn route(
+        &self,
+        source_id: &str,
+        n: &Notification,
+        is_duplicate: impl Fn(&str) -> bool,
+    ) -> Routing {
+        let mut routing = Routing::default();
         let mut seen = HashSet::new();
         let mut queue = VecDeque::from([source_id.to_string()]);
         while let Some(id) = queue.pop_front() {
@@ -191,26 +334,42 @@ impl Graph {
                 continue;
             }
             let Some(node) = self.node(&id) else { continue };
-            let follow: Option<&str> = match &node.kind {
+            // The output to follow, and the one an edge without a handle counts as.
+            let follow: Option<(&str, &str)> = match &node.kind {
                 NodeKind::Source(_) => None,
-                NodeKind::Filter(f) => Some(if f.matches(n) {
-                    HANDLE_MATCH
+                NodeKind::Filter(f) => Some((
+                    if f.matches(n) {
+                        HANDLE_MATCH
+                    } else {
+                        HANDLE_ELSE
+                    },
+                    HANDLE_MATCH,
+                )),
+                NodeKind::Dedup(_) => Some(if is_duplicate(&id) {
+                    routing.duplicates.push(id.clone());
+                    (HANDLE_DUPLICATE, HANDLE_NEW)
                 } else {
-                    HANDLE_ELSE
+                    routing.passed.push(id.clone());
+                    (HANDLE_NEW, HANDLE_NEW)
                 }),
-                NodeKind::Http(_) => {
-                    targets.push(id.clone());
+                NodeKind::Http(_) | NodeKind::Apprise(_) => {
+                    routing.targets.push(id.clone());
                     continue; // only fallback edges leave a target; the engine follows those
                 }
             };
             for edge in self.edges_from(&id) {
-                let handle = edge.source_handle.as_deref().unwrap_or(HANDLE_MATCH);
-                if follow.is_none_or(|h| h == handle) {
+                let follows = match follow {
+                    None => true,
+                    Some((handle, default)) => {
+                        edge.source_handle.as_deref().unwrap_or(default) == handle
+                    }
+                };
+                if follows {
                     queue.push_back(edge.target.clone());
                 }
             }
         }
-        targets
+        routing
     }
 
     /// The targets to try once `target_id` has given up.
@@ -250,7 +409,61 @@ impl Graph {
                         }
                     }
                 }
+                NodeKind::Dedup(d) => {
+                    if d.window_secs == 0 {
+                        errors.push(format!(
+                            "dedupe \"{name}\": the window must be at least 1 second"
+                        ));
+                    }
+                    if d.key.trim().is_empty() {
+                        errors.push(format!("dedupe \"{name}\" needs a key"));
+                    }
+                    if let Err(e) = crate::template::check(&d.key) {
+                        errors.push(format!("dedupe \"{name}\": key template: {e}"));
+                    }
+                }
+                NodeKind::Apprise(t) => {
+                    check_target_common(&mut errors, name, Target::Apprise(t));
+                    match reqwest::Url::parse(t.url.trim()) {
+                        Ok(u) if matches!(u.scheme(), "http" | "https") => {}
+                        _ => errors.push(format!(
+                            "target \"{name}\" needs the Apprise API server's http(s) URL"
+                        )),
+                    }
+                    let key = t.key.trim();
+                    let urls = t.urls.iter().filter(|u| !u.trim().is_empty()).count();
+                    if key.is_empty() && urls == 0 {
+                        errors.push(format!(
+                            "target \"{name}\" needs Apprise URLs or a configuration key"
+                        ));
+                    }
+                    if !key.is_empty() && urls > 0 {
+                        errors.push(format!(
+                            "target \"{name}\": use Apprise URLs or a configuration key, not both"
+                        ));
+                    }
+                    if !key.is_empty()
+                        && (key.len() > 128
+                            || !key
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+                    {
+                        errors.push(format!(
+                            "target \"{name}\": a configuration key is 1-128 letters, digits, _ and -"
+                        ));
+                    }
+                    let templates = [("title", &t.title), ("body", &t.body)]
+                        .into_iter()
+                        .chain(t.headers.iter().map(|h| ("header", &h.value)));
+                    for (what, template) in templates {
+                        if let Err(e) = crate::template::check(template) {
+                            errors.push(format!("target \"{name}\": {what} template: {e}"));
+                        }
+                    }
+                    check_headers(&mut errors, name, &t.headers);
+                }
                 NodeKind::Http(t) => {
+                    check_target_common(&mut errors, name, Target::Http(t));
                     if t.url.trim().is_empty() {
                         errors.push(format!("target \"{name}\" needs a URL"));
                     }
@@ -258,14 +471,6 @@ impl Graph {
                         errors.push(format!(
                             "target \"{name}\": {} is not an HTTP method",
                             t.method
-                        ));
-                    }
-                    if t.retry.max_attempts == 0 {
-                        errors.push(format!("target \"{name}\": attempts must be at least 1"));
-                    }
-                    if t.timeout_secs == 0 {
-                        errors.push(format!(
-                            "target \"{name}\": the timeout must be at least 1 second"
                         ));
                     }
                     let templates = [("URL", &t.url), ("body", &t.body)]
@@ -276,14 +481,7 @@ impl Graph {
                             errors.push(format!("target \"{name}\": {what} template: {e}"));
                         }
                     }
-                    for h in &t.headers {
-                        if reqwest::header::HeaderName::from_bytes(h.name.as_bytes()).is_err() {
-                            errors.push(format!(
-                                "target \"{name}\": \"{}\" is not a header name",
-                                h.name
-                            ));
-                        }
-                    }
+                    check_headers(&mut errors, name, &t.headers);
                 }
             }
         }
@@ -304,8 +502,12 @@ impl Graph {
                 (NodeKind::Filter(_), _) => {
                     matches!(handle, None | Some(HANDLE_MATCH | HANDLE_ELSE))
                 }
-                (NodeKind::Http(_), NodeKind::Http(_)) => handle == Some(HANDLE_FALLBACK),
-                (NodeKind::Http(_), _) => false,
+                (NodeKind::Dedup(_), _) => {
+                    matches!(handle, None | Some(HANDLE_NEW | HANDLE_DUPLICATE))
+                }
+                (NodeKind::Http(_) | NodeKind::Apprise(_), to) => {
+                    to.as_target().is_some() && handle == Some(HANDLE_FALLBACK)
+                }
             };
             if !ok {
                 errors.push(format!(
@@ -321,12 +523,47 @@ impl Graph {
     }
 }
 
+fn check_target_common(errors: &mut Vec<String>, name: &str, t: Target<'_>) {
+    if t.retry().max_attempts == 0 {
+        errors.push(format!("target \"{name}\": attempts must be at least 1"));
+    }
+    if t.timeout_secs() == 0 {
+        errors.push(format!(
+            "target \"{name}\": the timeout must be at least 1 second"
+        ));
+    }
+    for e in t.quiet_hours().check() {
+        errors.push(format!("target \"{name}\": {e}"));
+    }
+}
+
+fn check_headers(errors: &mut Vec<String>, name: &str, headers: &[Header]) {
+    for h in headers {
+        if reqwest::header::HeaderName::from_bytes(h.name.as_bytes()).is_err() {
+            errors.push(format!(
+                "target \"{name}\": \"{}\" is not a header name",
+                h.name
+            ));
+        }
+    }
+}
+
 impl NodeKind {
     pub fn name(&self) -> &str {
         match self {
             NodeKind::Source(s) => &s.name,
             NodeKind::Filter(f) => &f.name,
+            NodeKind::Dedup(d) => &d.name,
             NodeKind::Http(t) => &t.name,
+            NodeKind::Apprise(t) => &t.name,
+        }
+    }
+
+    pub fn as_target(&self) -> Option<Target<'_>> {
+        match self {
+            NodeKind::Http(t) => Some(Target::Http(t)),
+            NodeKind::Apprise(t) => Some(Target::Apprise(t)),
+            _ => None,
         }
     }
 
@@ -334,7 +571,8 @@ impl NodeKind {
         match self {
             NodeKind::Source(_) => "source",
             NodeKind::Filter(_) => "filter",
-            NodeKind::Http(_) => "target",
+            NodeKind::Dedup(_) => "dedupe",
+            NodeKind::Http(_) | NodeKind::Apprise(_) => "target",
         }
     }
 }
@@ -481,8 +719,9 @@ mod tests {
     fn routes_by_filter() {
         let g = graph();
         assert!(g.validate().is_empty(), "{:?}", g.validate());
-        assert_eq!(g.route("src", &note(5, &[])), ["log", "discord"]);
-        assert_eq!(g.route("src", &note(2, &[])), ["log", "monitor"]);
+        let route = |n| g.route("src", &n, |_| false).targets;
+        assert_eq!(route(note(5, &[])), ["log", "discord"]);
+        assert_eq!(route(note(2, &[])), ["log", "monitor"]);
         assert_eq!(g.fallbacks("discord"), ["monitor"]);
         assert!(g.fallbacks("monitor").is_empty());
     }
@@ -525,5 +764,46 @@ mod tests {
             source_handle: None,
         });
         assert_eq!(g.validate().len(), 2);
+    }
+
+    #[test]
+    fn routes_through_dedupe_and_apprise() {
+        let g: Graph = serde_json::from_value(json!({
+            "nodes": [
+                {"id": "src", "type": "source", "data": {"name": "Tramline"}},
+                {"id": "dd", "type": "dedup", "data": {"name": "Once", "windowSecs": 60}},
+                {"id": "phone", "type": "apprise", "data": {"name": "Phone", "url": "http://apprise:8000", "urls": ["ntfy://topic"]}},
+                {"id": "log", "type": "http", "data": {"name": "Log", "url": "http://log"}}
+            ],
+            "edges": [
+                {"id": "e1", "source": "src", "target": "dd"},
+                {"id": "e2", "source": "dd", "target": "phone", "sourceHandle": "new"},
+                {"id": "e3", "source": "dd", "target": "log", "sourceHandle": "duplicate"},
+                {"id": "e4", "source": "phone", "target": "log", "sourceHandle": "fallback"}
+            ]
+        }))
+        .unwrap();
+        assert!(g.validate().is_empty(), "{:?}", g.validate());
+        let n = note(3, &[]);
+        let first = g.route("src", &n, |_| false);
+        assert_eq!(first.targets, ["phone"]);
+        assert_eq!(first.passed, ["dd"]);
+        let again = g.route("src", &n, |id| id == "dd");
+        assert_eq!(again.targets, ["log"]);
+        assert_eq!(again.duplicates, ["dd"]);
+        assert_eq!(g.fallbacks("phone"), ["log"]);
+
+        let mut bad = g.clone();
+        if let NodeKind::Apprise(t) = &mut bad.nodes[2].kind {
+            t.key = "has space".into();
+        }
+        bad.edges.push(Edge {
+            id: "e5".into(),
+            source: "dd".into(),
+            target: "log".into(),
+            source_handle: Some("match".into()),
+        });
+        // Both URLs and a key, a bad key, and a filter handle on a dedupe node.
+        assert_eq!(bad.validate().len(), 3, "{:?}", bad.validate());
     }
 }

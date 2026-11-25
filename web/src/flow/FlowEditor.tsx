@@ -19,10 +19,10 @@ import {
   type Node,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { api, ApiError, describe, type Graph, type GraphNode, type GraphResponse, type NodeType } from "../api";
+import { api, ApiError, describe, isTarget, type Graph, type GraphNode, type GraphResponse, type NodeType } from "../api";
 import { Inspector } from "./Inspector";
 import { nodeTypes } from "./nodes";
-import { newFilter, newSource, presets } from "./presets";
+import { newDedup, newFilter, newSource, presets } from "./presets";
 
 type AnyNode = Node<Record<string, unknown>, NodeType>;
 
@@ -32,13 +32,16 @@ const edgeStyle: Record<string, Partial<Edge>> = {
   fallback: { style: { stroke: "var(--fallback)", strokeWidth: 2, strokeDasharray: "6 4" }, animated: true },
   default: { style: { stroke: "var(--edge)", strokeWidth: 2 } },
 };
+// A dedupe node's outputs look like a filter's.
+const handleStyle: Record<string, string> = { new: "match", duplicate: "else" };
 
 function decorate(edge: Edge): Edge {
-  const kind = edge.sourceHandle ?? "default";
+  const handle = edge.sourceHandle ?? "default";
+  const kind = handleStyle[handle] ?? handle;
   return {
     ...edge,
     ...(edgeStyle[kind] ?? edgeStyle.default),
-    markerEnd: { type: MarkerType.ArrowClosed, color: `var(--${kind === "default" ? "edge" : kind})` },
+    markerEnd: { type: MarkerType.ArrowClosed, color: `var(--${edgeStyle[kind] && kind !== "default" ? kind : "edge"})` },
     label: kind === "fallback" ? "fallback" : undefined,
     labelStyle: { fill: "var(--fallback)", fontSize: 11 },
     labelBgStyle: { fill: "var(--bg)" },
@@ -107,7 +110,7 @@ function Editor() {
       const from = nodes.find((n) => n.id === c.source);
       const to = nodes.find((n) => n.id === c.target);
       if (!from || !to || from.id === to.id || to.type === "source") return false;
-      if (from.type === "http") return to.type === "http" && c.sourceHandle === "fallback";
+      if (isTarget(from.type)) return isTarget(to.type) && c.sourceHandle === "fallback";
       return true;
     },
     [nodes],
@@ -174,12 +177,13 @@ function Editor() {
       <div className="toolbar">
         <button onClick={() => add("source", newSource())}>+ Source</button>
         <button onClick={() => add("filter", newFilter())}>+ Filter</button>
+        <button onClick={() => add("dedup", newDedup())}>+ Dedupe</button>
         <div className="menu-wrap">
           <button onClick={() => setAddMenu((v) => !v)}>+ Target ▾</button>
           {addMenu && (
             <div className="menu" onMouseLeave={() => setAddMenu(false)}>
               {presets.map((p) => (
-                <button key={p.id} className="menu-item" onClick={() => add("http", p.make())}>
+                <button key={p.id} className="menu-item" onClick={() => add(p.type, p.make())}>
                   <strong>{p.label}</strong>
                   <span className="muted small">{p.description}</span>
                 </button>
@@ -246,7 +250,8 @@ function Editor() {
               <p>
                 Add a <strong>source</strong> for each project that sends notifications, then <strong>targets</strong>{" "}
                 to deliver to, and connect them. Put <strong>filters</strong> in between to route by priority, tags or
-                anything in the notification. Drag from a target's bottom handle to another target to add a fallback.
+                anything in the notification, and <strong>dedupe</strong> nodes to let repeats through only once in a
+                while. Drag from a target's bottom handle to another target to add a fallback.
               </p>
             </div>
           )}

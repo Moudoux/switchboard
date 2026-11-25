@@ -2,7 +2,9 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::graph::HttpTarget;
+use serde_json::json;
+
+use crate::graph::{AppriseFormat, AppriseTarget, Header, HttpTarget, Target};
 use crate::template;
 
 /// What one attempt sent and got back.
@@ -38,23 +40,114 @@ pub fn render(target: &HttpTarget, n: &serde_json::Value) -> Result<RenderedRequ
         .map_err(|e| format!("URL template: {e}"))?
         .trim()
         .to_string();
-    let mut headers = Vec::new();
-    for h in &target.headers {
-        let value = template::render(&h.value, n).map_err(|e| format!("header {}: {e}", h.name))?;
-        headers.push((h.name.clone(), value.trim().to_string()));
-    }
     let body = template::render(&target.body, n).map_err(|e| format!("body template: {e}"))?;
     Ok(RenderedRequest {
         method: target.method.to_uppercase(),
         url,
-        headers,
+        headers: render_headers(&target.headers, n)?,
         body,
     })
 }
 
-pub async fn send(client: &reqwest::Client, target: &HttpTarget, n: &serde_json::Value) -> Outcome {
+fn render_headers(
+    headers: &[Header],
+    n: &serde_json::Value,
+) -> Result<Vec<(String, String)>, String> {
+    headers
+        .iter()
+        .map(|h| {
+            let value =
+                template::render(&h.value, n).map_err(|e| format!("header {}: {e}", h.name))?;
+            Ok((h.name.clone(), value.trim().to_string()))
+        })
+        .collect()
+}
+
+/// The request to an Apprise API server: `/notify/` with the URLs, or `/notify/<key>` with a tag.
+pub fn render_apprise(
+    target: &AppriseTarget,
+    n: &serde_json::Value,
+) -> Result<RenderedRequest, String> {
+    let title = template::render(&target.title, n).map_err(|e| format!("title template: {e}"))?;
+    let mut body = template::render(&target.body, n).map_err(|e| format!("body template: {e}"))?;
+    if body.trim().is_empty() {
+        // Apprise needs a body; the title is better than nothing.
+        body = title.clone();
+    }
+    let priority = n["priority"].as_i64().unwrap_or(3);
+    let kind = match priority {
+        5.. => "failure",
+        4 => "warning",
+        _ => "info",
+    };
+    let format = match target.format {
+        AppriseFormat::Text => "text",
+        AppriseFormat::Markdown => "markdown",
+        AppriseFormat::Html => "html",
+    };
+    let mut payload = json!({
+        "title": title.trim(),
+        "body": body,
+        "type": kind,
+        "format": format,
+    });
+    let base = target.url.trim().trim_end_matches('/');
+    let key = target.key.trim();
+    let url = if key.is_empty() {
+        let urls: Vec<&str> = target
+            .urls
+            .iter()
+            .map(|u| u.trim())
+            .filter(|u| !u.is_empty())
+            .collect();
+        payload["urls"] = json!(urls.join(", "));
+        format!("{base}/notify/")
+    } else {
+        if !target.tag.trim().is_empty() {
+            payload["tag"] = json!(target.tag.trim());
+        }
+        format!("{base}/notify/{key}")
+    };
+    let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
+    headers.extend(render_headers(&target.headers, n)?);
+    Ok(RenderedRequest {
+        method: "POST".into(),
+        url,
+        headers,
+        body: payload.to_string(),
+    })
+}
+
+pub async fn send(client: &reqwest::Client, target: Target<'_>, n: &serde_json::Value) -> Outcome {
     let started = Instant::now();
-    let failed = |error: String, retryable: bool, request| Outcome {
+    let rendered = match target {
+        Target::Http(t) => render(t, n),
+        Target::Apprise(t) => render_apprise(t, n),
+    };
+    let mut outcome = match rendered {
+        Ok(request) => execute(client, request, target.timeout_secs(), started).await,
+        Err(e) => failed(started, e, false, None),
+    };
+    if let Target::Apprise(_) = target
+        && outcome.http_status == Some(424)
+    {
+        // Apprise answers 424 when a service it notified failed, which is usually worth retrying.
+        outcome.retryable = true;
+        outcome.error = Some(
+            "HTTP 424: Apprise couldn't notify at least one service, or no URL matched the tag"
+                .into(),
+        );
+    }
+    outcome
+}
+
+fn failed(
+    started: Instant,
+    error: String,
+    retryable: bool,
+    request: Option<RenderedRequest>,
+) -> Outcome {
+    Outcome {
         ok: false,
         retryable,
         http_status: None,
@@ -63,15 +156,20 @@ pub async fn send(client: &reqwest::Client, target: &HttpTarget, n: &serde_json:
         duration_ms: started.elapsed().as_millis() as i64,
         retry_after: None,
         request,
-    };
-    let request = match render(target, n) {
-        Ok(r) => r,
-        Err(e) => return failed(e, false, None),
-    };
+    }
+}
+
+async fn execute(
+    client: &reqwest::Client,
+    request: RenderedRequest,
+    timeout_secs: u64,
+    started: Instant,
+) -> Outcome {
     let method = match reqwest::Method::from_bytes(request.method.as_bytes()) {
         Ok(m) => m,
         Err(_) => {
             return failed(
+                started,
                 format!("bad method {}", request.method),
                 false,
                 Some(request),
@@ -80,7 +178,7 @@ pub async fn send(client: &reqwest::Client, target: &HttpTarget, n: &serde_json:
     };
     let mut builder = client
         .request(method, &request.url)
-        .timeout(Duration::from_secs(target.timeout_secs));
+        .timeout(Duration::from_secs(timeout_secs));
     let mut has_content_type = false;
     for (name, value) in &request.headers {
         has_content_type |= name.eq_ignore_ascii_case("content-type");
@@ -104,7 +202,7 @@ pub async fn send(client: &reqwest::Client, target: &HttpTarget, n: &serde_json:
         Ok(r) => r,
         Err(e) => {
             let retryable = !e.is_builder();
-            return failed(describe(&e), retryable, Some(request));
+            return failed(started, describe(&e), retryable, Some(request));
         }
     };
     let status = response.status();
@@ -151,5 +249,37 @@ fn describe(e: &reqwest::Error) -> String {
         format!("too many redirects: {cause}")
     } else {
         cause
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_apprise_requests() {
+        let mut t: AppriseTarget = serde_json::from_value(json!({
+            "name": "Phone", "url": "http://apprise:8000/", "urls": ["ntfy://a", " ", "tgram://b/c"], "format": "markdown"
+        }))
+        .unwrap();
+        let n =
+            json!({"title": null, "text": "disk full", "priority": 5, "source": {"name": "NAS"}});
+        let r = render_apprise(&t, &n).unwrap();
+        assert_eq!(r.url, "http://apprise:8000/notify/");
+        let body: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(
+            body,
+            json!({"urls": "ntfy://a, tgram://b/c", "title": "NAS", "body": "disk full", "type": "failure", "format": "markdown"})
+        );
+
+        t.urls.clear();
+        t.key = "home".into();
+        t.tag = "ops, admins".into();
+        let r = render_apprise(&t, &json!({"title": "Hi", "text": "x", "priority": 2})).unwrap();
+        assert_eq!(r.url, "http://apprise:8000/notify/home");
+        let body: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(body["tag"], "ops, admins");
+        assert_eq!(body["type"], "info");
+        assert!(body.get("urls").is_none());
     }
 }

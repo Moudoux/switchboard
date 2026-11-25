@@ -1,6 +1,6 @@
 [package]
 name = "switchboard"
-version = "0.1.0"
+version = "0.2.0"
 license = "MIT"
 edition = "2024"
 
@@ -10,6 +10,7 @@ axum = "0.8.9"
 axum-extra = { version = "0.12.6", features = ["cookie"] }
 futures = "0.3.34"
 hex = "0.4.3"
+jiff = { version = "1.0.2", features = ["tzdb-bundle-always"] }
 minijinja = { version = "3.1.0", features = ["json", "serde", "urlencode"] }
 rand = "0.10.4"
 regex = "1.13.2"

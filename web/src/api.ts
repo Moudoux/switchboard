@@ -42,6 +42,20 @@ export type RetryPolicy = {
   maxBackoffSecs: number;
   giveUpAfterSecs: number;
 };
+export type QuietHours = {
+  enabled: boolean;
+  /** "HH:MM"; an end not after the start runs past midnight. */
+  start: string;
+  end: string;
+  /** Days a quiet period starts on, 0 (Sunday) to 6 (Saturday). */
+  days: number[];
+  /** IANA name; empty is the server's time zone. */
+  timezone: string;
+  action: "hold" | "drop";
+  /** Notifications with at least this priority go through anyway; null lets nothing through. */
+  minPriority: number | null;
+};
+export type DedupData = { name: string; key: string; windowSecs: number };
 export type HttpData = {
   name: string;
   method: string;
@@ -50,16 +64,37 @@ export type HttpData = {
   body: string;
   timeoutSecs: number;
   retry: RetryPolicy;
+  quietHours?: QuietHours;
   /** Which preset it was made from, for the icon. The server ignores it. */
   preset?: string;
 };
+export type AppriseData = {
+  name: string;
+  /** The Apprise API server. */
+  url: string;
+  /** Apprise URLs (stateless), used when `key` is empty. */
+  urls: string[];
+  /** A configuration saved on the Apprise server (stateful). */
+  key: string;
+  tag: string;
+  title: string;
+  body: string;
+  format: "text" | "markdown" | "html";
+  headers: { name: string; value: string }[];
+  timeoutSecs: number;
+  retry: RetryPolicy;
+  quietHours?: QuietHours;
+};
+export type TargetData = HttpData | AppriseData;
 
-export type NodeType = "source" | "filter" | "http";
+export type NodeType = "source" | "filter" | "dedup" | "http" | "apprise";
+export type NodeData = SourceData | FilterData | DedupData | HttpData | AppriseData;
+export const isTarget = (type: string | undefined): type is "http" | "apprise" => type === "http" || type === "apprise";
 export type GraphNode = {
   id: string;
   type: NodeType;
   position: { x: number; y: number };
-  data: SourceData | FilterData | HttpData;
+  data: NodeData;
 };
 export type GraphEdge = { id: string; source: string; target: string; sourceHandle?: string | null };
 export type Graph = { nodes: GraphNode[]; edges: GraphEdge[] };
@@ -83,9 +118,14 @@ export type Notification = {
   tags: string[];
   url: string | null;
   data: Record<string, unknown>;
-  routing: "received" | "routed" | "unrouted";
-  deliveries: { delivered: number; pending: number; failed: number };
+  routing: "received" | "routed" | "unrouted" | "duplicate";
+  /** Why routing turned out as it did, such as a dedupe node's verdict. */
+  notes: { text: string; notificationId?: string }[];
+  /** Counts for the target filtered on, when there is one. */
+  deliveries: { delivered: number; pending: number; held: number; skipped: number; failed: number };
 };
+
+export type TargetOption = { id: string; name: string; inGraph: boolean };
 
 export type Attempt = {
   startedAt: number;
@@ -101,9 +141,11 @@ export type Delivery = {
   targetId: string;
   targetName: string;
   parentId: string | null;
-  status: "pending" | "sending" | "delivered" | "failed";
+  status: "pending" | "sending" | "delivered" | "failed" | "skipped";
   attempts: number;
   nextAttemptAt: number;
+  /** When quiet hours held it back, the time they end. */
+  heldUntil: number | null;
   lastError: string | null;
   createdAt: number;
   finishedAt: number | null;

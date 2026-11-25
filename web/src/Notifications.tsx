@@ -10,6 +10,7 @@ import {
   type Delivery,
   type Notification,
   type NotificationDetail,
+  type TargetOption,
 } from "./api";
 
 const PAGE = 50;
@@ -17,27 +18,55 @@ const PAGE = 50;
 function summary(n: Notification): { label: string; kind: string } {
   if (n.routing === "received") return { label: "routing", kind: "pending" };
   if (n.routing === "unrouted") return { label: "no route", kind: "muted" };
-  const { delivered, pending, failed } = n.deliveries;
-  if (pending > 0) return { label: failed ? "retrying" : "sending", kind: "pending" };
+  if (n.routing === "duplicate") return { label: "duplicate", kind: "muted" };
+  const { delivered, pending, held, skipped, failed } = n.deliveries;
+  if (pending > held) return { label: failed ? "retrying" : "sending", kind: "pending" };
+  if (held > 0) return { label: "held", kind: "held" };
   if (failed > 0) return { label: delivered ? "partly failed" : "failed", kind: "bad" };
+  if (delivered === 0 && skipped > 0) return { label: "skipped", kind: "muted" };
   return { label: "delivered", kind: "ok" };
 }
+
+function deliveryLabel(d: Delivery): string {
+  if (d.status === "pending" && d.attempts === 0 && d.heldUntil && d.heldUntil > Date.now())
+    return `held until ${formatTime(d.heldUntil)}`;
+  if (d.status === "pending" && d.attempts > 0) return `retry ${d.attempts + 1} ${timeAgo(d.nextAttemptAt)}`;
+  if (d.status === "pending") return "queued";
+  return d.status;
+}
+
+const pillKind: Record<Delivery["status"], string> = {
+  delivered: "ok",
+  failed: "bad",
+  skipped: "muted",
+  pending: "pending",
+  sending: "pending",
+};
 
 export function Notifications() {
   const [items, setItems] = useState<Notification[]>([]);
   const [more, setMore] = useState(false);
   const [status, setStatus] = useState("");
+  const [target, setTarget] = useState("");
+  const [targets, setTargets] = useState<TargetOption[]>([]);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string>();
   const [error, setError] = useState<string>();
   const [tick, setTick] = useState(0);
-  const params = useRef({ status, query });
-  params.current = { status, query };
+  const params = useRef({ status, query, target });
+  params.current = { status, query, target };
+
+  useEffect(() => {
+    api<TargetOption[]>("/api/targets")
+      .then(setTargets)
+      .catch(() => {});
+  }, []);
 
   const fetchPage = useCallback(async (before?: number) => {
     const q = new URLSearchParams({ limit: String(PAGE) });
     if (before) q.set("before", String(before));
     if (params.current.status) q.set("status", params.current.status);
+    if (params.current.target) q.set("target", params.current.target);
     if (params.current.query.trim()) q.set("q", params.current.query.trim());
     return api<Notification[]>(`/api/notifications?${q}`);
   }, []);
@@ -56,7 +85,7 @@ export function Notifications() {
   useEffect(() => {
     const t = setTimeout(reload, 200);
     return () => clearTimeout(t);
-  }, [status, query, reload]);
+  }, [status, query, target, reload]);
 
   // Live updates: refresh at most twice a second while events arrive.
   useEffect(() => {
@@ -80,14 +109,31 @@ export function Notifications() {
       <section className="list-pane">
         <div className="list-filters">
           <input placeholder="Search title and body" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <select value={target} onChange={(e) => setTarget(e.target.value)} title="Only notifications sent to this target">
+            <option value="">Every target</option>
+            {targets.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+                {t.inGraph ? "" : " (removed)"}
+              </option>
+            ))}
+          </select>
           <select value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">All</option>
             <option value="delivered">Delivered</option>
             <option value="pending">Sending or retrying</option>
+            <option value="held">Held for quiet hours</option>
             <option value="failed">Failed</option>
+            <option value="skipped">Skipped in quiet hours</option>
             <option value="unrouted">No route</option>
+            <option value="duplicate">Duplicates</option>
           </select>
         </div>
+        {target && (
+          <div className="muted small pad-x">
+            Showing what reached {targets.find((t) => t.id === target)?.name ?? "this target"}; statuses are its own.
+          </div>
+        )}
         {error && <div className="error pad">{error}</div>}
         {items.length === 0 && !error && (
           <div className="muted pad">
@@ -127,13 +173,17 @@ export function Notifications() {
         )}
       </section>
       <section className="detail-pane">
-        {selected ? <Detail id={selected} tick={tick} /> : <div className="muted pad">Select a notification to see where it went.</div>}
+        {selected ? (
+          <Detail id={selected} tick={tick} onSelect={setSelected} />
+        ) : (
+          <div className="muted pad">Select a notification to see where it went.</div>
+        )}
       </section>
     </div>
   );
 }
 
-function Detail({ id, tick }: { id: string; tick: number }) {
+function Detail({ id, tick, onSelect }: { id: string; tick: number; onSelect: (id: string) => void }) {
   const [n, setN] = useState<NotificationDetail>();
   const [error, setError] = useState<string>();
   const load = useCallback(() => {
@@ -189,6 +239,19 @@ function Detail({ id, tick }: { id: string; tick: number }) {
         </button>
       </div>
       {n.routing === "unrouted" && <p className="muted">No target matched when it arrived.</p>}
+      {n.notes.map((note, i) => (
+        <p key={i} className="muted">
+          {note.text}
+          {note.notificationId && (
+            <>
+              {" "}
+              <button className="link" onClick={() => onSelect(note.notificationId!)}>
+                Show the original
+              </button>
+            </>
+          )}
+        </p>
+      ))}
       {n.routing === "received" && <p className="muted">Waiting to be routed.</p>}
       <div className="deliveries">
         {roots.map((d) => (
@@ -201,20 +264,15 @@ function Detail({ id, tick }: { id: string; tick: number }) {
 
 function DeliveryCard({ d, children, onChange }: { d: Delivery; children: (d: Delivery) => Delivery[]; onChange: () => void }) {
   const kids = children(d);
-  const label =
-    d.status === "pending" && d.attempts > 0
-      ? `retry ${d.attempts + 1} ${timeAgo(d.nextAttemptAt)}`
-      : d.status === "pending"
-        ? "queued"
-        : d.status;
+  const label = deliveryLabel(d);
   return (
     <div className="delivery">
       <div className={`delivery-card ${d.status}`}>
         <div className="delivery-head">
           <strong>{d.targetName}</strong>
-          <span className={`pill ${d.status === "delivered" ? "ok" : d.status === "failed" ? "bad" : "pending"}`}>{label}</span>
+          <span className={`pill ${label.startsWith("held") ? "held" : pillKind[d.status]}`}>{label}</span>
           <span className="spacer" />
-          {(d.status === "failed" || d.status === "delivered") && (
+          {(d.status === "failed" || d.status === "delivered" || d.status === "skipped") && (
             <button
               className="small-btn"
               onClick={async () => {
@@ -222,11 +280,13 @@ function DeliveryCard({ d, children, onChange }: { d: Delivery; children: (d: De
                 onChange();
               }}
             >
-              Retry
+              {d.status === "skipped" ? "Send now" : "Retry"}
             </button>
           )}
         </div>
-        {d.lastError && d.status !== "delivered" && <div className="error small">{d.lastError}</div>}
+        {d.lastError && d.status !== "delivered" && (
+          <div className={`small ${d.status === "skipped" || (d.heldUntil && d.attempts === 0) ? "muted" : "error"}`}>{d.lastError}</div>
+        )}
         {d.tries.length > 0 && (
           <ol className="attempts">
             {d.tries.map((a, i) => (

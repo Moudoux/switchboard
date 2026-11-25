@@ -18,6 +18,9 @@
   --node-source: #5aa7e8;
   --node-filter: #a98be8;
   --node-http: #4fbf7f;
+  --node-dedup: #4fc3c3;
+  --node-apprise: #e87fb0;
+  --held: #b99af0;
   --minimap-mask: rgba(10, 12, 16, 0.6);
   --radius: 8px;
   color-scheme: dark;
@@ -45,6 +48,7 @@
     --fallback: #c9821a;
     --edge: #6d7aa0;
     --grid: #dde1e8;
+    --held: #7a52c2;
     --minimap-mask: rgba(240, 242, 245, 0.7);
     color-scheme: light;
   }
@@ -158,6 +162,9 @@ main { flex: 1; min-height: 0; }
 .node-source { --kind: var(--node-source); }
 .node-filter { --kind: var(--node-filter); padding-right: 2.6rem; }
 .node-http { --kind: var(--node-http); padding-bottom: 1.5rem; }
+.node-apprise { --kind: var(--node-apprise); padding-bottom: 1.5rem; }
+.node-dedup { --kind: var(--node-dedup); padding-right: 4.2rem; max-width: 18rem; }
+.node-meta.quiet { color: var(--held); }
 .node-kind { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--kind); font-weight: 600; display: flex; align-items: center; gap: 0.3rem; }
 .node-title { font-weight: 600; margin: 0.1rem 0 0.2rem; word-break: break-word; }
 .node-meta { font-size: 0.78rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -197,7 +204,17 @@ details summary { cursor: pointer; }
 .list-pane { width: 440px; flex-shrink: 0; border-right: 1px solid var(--border); overflow-y: auto; background: var(--panel); }
 .detail-pane { flex: 1; overflow-y: auto; }
 .list-filters { display: flex; gap: 0.5rem; padding: 0.75rem; position: sticky; top: 0; background: var(--panel); border-bottom: 1px solid var(--border); }
+.list-filters { flex-wrap: wrap; }
+.list-filters input { flex: 1 1 10rem; }
 .list-filters select { width: auto; }
+.pad-x { padding: 0.4rem 0.75rem 0; }
+.pill.held { color: var(--held); }
+button.link { background: none; border: none; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; font: inherit; }
+label.check { display: flex; align-items: center; gap: 0.4rem; margin: 0.3rem 0 0.6rem; }
+label.check input { width: auto; }
+.days { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+.day { padding: 0.2rem 0.5rem; font-size: 0.8rem; }
+.day.on { background: var(--held); border-color: var(--held); color: var(--accent-text); }
 .notification-list { list-style: none; margin: 0; padding: 0; }
 .notification-list li { padding: 0.65rem 0.9rem; border-bottom: 1px solid var(--border); cursor: pointer; }
 .notification-list li:hover { background: var(--panel-2); }
