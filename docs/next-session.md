@@ -17,13 +17,14 @@ Published as the public repo https://github.com/Moudoux/switchboard (MIT licence
 - **Image:** builds for amd64 and arm64 (63 MB and 73 MB). The amd64 container became healthy and served the GUI, and the arm64 binary ran under QEMU.
 - **CI:** `just check` passes locally, and `actionlint` is clean. The workflow hasn't run on GitHub yet.
 
-### Version 0.2.0 (2026-11-25, not committed yet)
+### Version 0.2.0 (2026-11-25, tagged `v0.2.0`, running on the Pi)
 
 - **Dedupe node** (`dedup` in the graph): key template, window, `new` and `duplicate` outputs. Keys are stored as SHA-256 in `dedup_keys` and cleaned up hourly. A notification that only a dedupe node stopped gets status `duplicate`, and a note in `notifications.notes` with the original's id.
 - **Quiet hours** on every target (`quietHours`, in `server/src/quiet_hours.rs`): start, end, days, IANA zone (jiff 1.0 with the tz database bundled), hold or drop, and a minimum priority that still goes through. A held delivery is `pending` with `held_until`, and its give-up time counts from then. A dropped delivery is `skipped`. Manual **Send again** and **Retry** skip both dedupe and quiet hours.
 - **Apprise target** (`apprise` in the graph): talks to an Apprise API server, stateless (`/notify/` with `urls`) or stateful (`/notify/<key>` with `tag`). Priority sets the type: 4 is warning, 5 is failure. A 424 is retried. Taken from the apprise-api README: 424 means a service failed *or* no tag matched.
 - **History filter by target:** `GET /api/targets` (targets in the graph plus targets that are only in the history), and `?target=` on `/api/notifications`. With a target set, the status counts and filters cover only that target's deliveries. New status filters: held, skipped, duplicate.
 - **Migration** `0002_dedup_quiet_hours.sql`. **Tests:** 13, including a handler-level test (`api::admin::tests`) that runs the router and the list handler against a scratch database.
+- **0.2.1:** `index.html` is served with `Cache-Control: no-cache`, and `/assets/*` with `immutable`. Before this, a browser could keep showing the previous GUI for hours after an update, which happened on the Pi with 0.2.0. Also: the Dockerfile's cargo registry cache is `sharing=locked`, because the parallel amd64 and arm64 builds broke each other's crate unpacking on a cold cache.
 - **Not verified:** the GUI in a browser, and a real Apprise server. Loopback TCP on the Arch machine timed out on 2026-11-25, even for `python -m http.server` plus curl outside the sandbox, so neither a test server nor headless Chrome could be reached. It was likely OpenSnitch or a firewall rule. `just check` passes, including the typed GUI build.
 
 ## Next steps, in order
