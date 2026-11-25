@@ -151,7 +151,7 @@ Open http://localhost:5173, then run `just enroll` for the first passkey's link.
 | `web/src/flow/`              | The routing editor                                            |
 | `web/src/Notifications.tsx`  | The notification history                                      |
 
-Pushes to `main` publish `ghcr.io/moudoux/switchboard:latest`, and tags like `v1.2.0` publish `1.2.0` and `1.2`.
+Pushes to `main` publish `ghcr.io/moudoux/switchboard:latest`. When a push to `main` passes CI and its version (in `server/Cargo.toml` and `web/package.json`) has no tag yet, CI releases it. The same image is also tagged `1.2.0` and `1.2`, and a `v1.2.0` tag and GitHub Release are created. To release, bump the version in both files.
 
 ## License
 

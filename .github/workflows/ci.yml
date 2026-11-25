@@ -2,6 +2,10 @@ name: CI
 
 # Tests every push and pull request. Pushes to main and version tags (v1.2.3) also publish a
 # multi-arch image (linux/amd64, linux/arm64) to ghcr.io/<owner>/<repo>.
+#
+# A push to main whose version (server/Cargo.toml) has no tag yet is released once everything
+# passes: the image just built is also tagged 1.2.3 and 1.2, and a v1.2.3 tag and GitHub Release
+# are created. Bumping the version is all it takes to release.
 
 on:
   push:
@@ -65,6 +69,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -88,6 +94,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        id: build
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -96,3 +103,71 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  release:
+    name: Release
+    needs: [image]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    # One at a time, so a second push waits and then sees the first one's tag.
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the tags and history, for the check and the notes
+          persist-credentials: false
+      - name: Find the version, and whether it's released
+        id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' server/Cargo.toml | head -n 1)
+          web=$(jq -r .version web/package.json)
+          if [ -z "$version" ] || [ "$version" != "$web" ]; then
+            echo "::error::server/Cargo.toml has version '$version' but web/package.json has '$web'"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$version" > /dev/null; then
+            echo "v$version is released already; nothing to do."
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Log in to GitHub Container Registry
+        if: steps.version.outputs.new == 'true'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tag the image with the version
+        if: steps.version.outputs.new == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          # The same multi-arch image the image job pushed, under more names; nothing is rebuilt.
+          docker buildx imagetools create \
+            --tag "$image:$VERSION" --tag "$image:${VERSION%.*}" "$image@$DIGEST"
+      - name: Create the tag and the release
+        if: steps.version.outputs.new == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          previous=$(git describe --tags --abbrev=0 --match 'v*' 2> /dev/null || true)
+          {
+            echo "Image: \`$image:$VERSION\` (\`$DIGEST\`)"
+            echo
+            echo "## Changes"
+            git log --format='- %s' ${previous:+"$previous..HEAD"}
+          } > notes.md
+          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --notes-file notes.md

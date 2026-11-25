@@ -5,7 +5,7 @@ A notification server: projects post notifications to one endpoint, and Switchbo
 - `server/`: Rust (axum, sqlx/SQLite, reqwest with rustls/ring, minijinja, webauthn-rs). One binary, `switchboard`, with `serve`, `enroll` and `health`.
 - `web/`: React + TypeScript + Vite + `@xyflow/react`, built into `web/dist` and served by the server.
 - `Dockerfile`: multi-arch (amd64, arm64). Rust cross-compiles on the build platform; don't add `RUN` steps to the runtime stage, which would need QEMU.
-- `.github/workflows/ci.yml`: tests, then builds and pushes `ghcr.io/<owner>/<repo>`. Actions are pinned to commit SHAs with the version in a comment; keep it that way, and run `actionlint` after changes.
+- `.github/workflows/ci.yml`: tests, then builds and pushes `ghcr.io/<owner>/<repo>`. A push to `main` whose version has no `v` tag yet is released by CI (version image tags, git tag, GitHub Release), so releasing is just bumping `version` in `server/Cargo.toml` and `web/package.json` together (CI fails if they differ). Don't tag by hand. Actions are pinned to commit SHAs with the version in a comment; keep it that way, and run `actionlint` after changes.
 
 ## Rules for the design
 
