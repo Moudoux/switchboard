@@ -10,8 +10,21 @@ services:
       # SWITCHBOARD_RETENTION_DAYS: "30"
       # SWITCHBOARD_CONCURRENCY: "16"
       # RUST_LOG: switchboard=info
+      # Single sign-on through an OpenID Connect provider (off without an issuer). Register
+      # https://notify.example.lan/api/auth/oidc/callback as the client's callback URL.
+      # SWITCHBOARD_OIDC_ISSUER: https://auth.example.lan
+      # SWITCHBOARD_OIDC_CLIENT_ID: switchboard
+      # SWITCHBOARD_OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret
+      # SWITCHBOARD_OIDC_BUTTON_LABEL: Sign in with Pocket ID
+      # When the provider's certificate is from your own CA:
+      # SWITCHBOARD_OIDC_CA_FILE: /certs/lan-ca.pem
+      # Once your account is linked, offer only single sign-on (enroll links keep working):
+      # SWITCHBOARD_PASSKEY_LOGIN: "false"
+    # secrets:
+    #   - oidc_client_secret
     volumes:
       - ./data:/data
+      # - ./lan-ca.pem:/certs/lan-ca.pem:ro
     networks:
       - nginx
     # Or publish the port directly when there is no proxy in front:
@@ -21,3 +34,8 @@ services:
 networks:
   nginx:
     external: true
+
+# The file must be readable by the container's user (uid 65532).
+# secrets:
+#   oidc_client_secret:
+#     file: ./oidc_client_secret

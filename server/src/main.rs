@@ -21,7 +21,7 @@ use crate::state::AppState;
 const USAGE: &str = "usage: switchboard [serve | enroll | health]
 
   serve    run the server (the default)
-  enroll   print a one-time link to register a passkey for the GUI
+  enroll   print a one-time link to register a passkey or link single sign-on
   health   check that the server answers (for container health checks)
 
 Settings come from the environment; see the README.";
@@ -75,6 +75,14 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         origin = state.config.origin,
         "listening on {listen}"
     );
+    if let Some(oidc) = &state.oidc {
+        tracing::info!(
+            issuer = oidc.issuer(),
+            redirect_uri = format!("{}{}", state.config.origin, api::oidc::CALLBACK_PATH),
+            passkey_login = state.config.passkey_login,
+            "single sign-on is on"
+        );
+    }
     axum::serve(listener, api::router(state))
         .with_graceful_shutdown(shutdown())
         .await?;

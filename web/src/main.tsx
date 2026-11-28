@@ -1,13 +1,13 @@
 import { StrictMode, useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
-import { Enroll, SignIn } from "./auth";
+import { type AuthStatus, Enroll, SignIn, takeSsoResult } from "./auth";
 import { FlowEditor } from "./flow/FlowEditor";
 import { Notifications } from "./Notifications";
 import { Settings } from "./Settings";
 import "./styles.css";
 
-type Status = { signedIn: boolean; hasPasskeys: boolean };
+type Status = AuthStatus;
 type Page = "routing" | "notifications" | "settings";
 
 function currentPage(): Page {
@@ -15,13 +15,19 @@ function currentPage(): Page {
   return p === "notifications" || p === "settings" ? p : "routing";
 }
 
+// Read once, at load: the server's verdict on a single sign-on it just sent the browser back from.
+const initialSsoResult = takeSsoResult();
+
 function App() {
   const [status, setStatus] = useState<Status>();
   const [page, setPage] = useState<Page>(currentPage);
   const enrollToken = location.pathname === "/enroll" ? location.hash.slice(1) : "";
+  const ssoResult = initialSsoResult;
 
   const check = useCallback(() => {
-    api<Status>("/api/auth/status").then(setStatus).catch(() => setStatus({ signedIn: false, hasPasskeys: true }));
+    api<Status>("/api/auth/status")
+      .then(setStatus)
+      .catch(() => setStatus({ signedIn: false, hasPasskeys: true, hasIdentities: false, passkeyLogin: true, sso: null }));
   }, []);
   useEffect(check, [check]);
   useEffect(() => {
@@ -36,8 +42,8 @@ function App() {
   }, []);
 
   if (!status) return null;
-  if (enrollToken) return <Enroll token={enrollToken} onDone={check} />;
-  if (!status.signedIn) return <SignIn hasPasskeys={status.hasPasskeys} onDone={check} />;
+  if (enrollToken) return <Enroll token={enrollToken} sso={status.sso} onDone={check} />;
+  if (!status.signedIn) return <SignIn status={status} ssoResult={ssoResult} onDone={check} />;
 
   const go = (p: Page) => {
     history.pushState(null, "", p === "routing" ? "/" : `/${p}`);
@@ -71,7 +77,7 @@ function App() {
       <main>
         {page === "routing" && <FlowEditor />}
         {page === "notifications" && <Notifications />}
-        {page === "settings" && <Settings />}
+        {page === "settings" && <Settings sso={status.sso} ssoResult={ssoResult} />}
       </main>
     </div>
   );

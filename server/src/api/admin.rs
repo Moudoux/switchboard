@@ -460,6 +460,8 @@ mod tests {
             concurrency: 1,
             cookie_secure: false,
             origin: "http://localhost:8080".into(),
+            passkey_login: true,
+            oidc: None,
         };
         let graph: Graph = serde_json::from_value(graph).unwrap();
         assert!(graph.validate().is_empty(), "{:?}", graph.validate());

@@ -33,6 +33,17 @@ Published as the public repo https://github.com/Moudoux/switchboard (MIT licence
 - **Verified:** `just check` (test `routes_through_groups`), and end to end on a scratch database: source → group → two dead targets, the first falling back to a second group of two; all four deliveries were created, the last two as fallbacks. A group → source edge is rejected on save.
 - **Not verified:** the GUI in a browser (node card colour `#d9875f`, inspector, connecting handles).
 
+### Single sign-on with OpenID Connect (2026-11-28, not released yet)
+
+- **What:** generic OIDC sign-in (`server/src/api/oidc.rs`, crate `openidconnect` 4.1 without default features, driven by our reqwest 0.13 client through `AsyncHttpClient`). Code flow with PKCE S256, `state`, `nonce`, confidential client (secret sent with HTTP Basic). Discovery and JWKS are cached for 10 minutes and forgotten after a failed callback, so rotated keys are picked up.
+- **Identities** are `oidc_identities` (migration `0003_oidc.sql`), keyed by (issuer, `sub`). Only linked ones sign in. Linking: Settings → **Link single sign-on** (`purpose: link`, needs a session), or the `enroll` page (`purpose: enroll`, uses up the token). An unlinked identity is sent to `/?sso=unlinked` with no session.
+- **Flow state** (state, nonce, PKCE verifier, purpose) is in memory under the SHA-256 of a random token in the `switchboard_oidc` cookie (`SameSite=Lax`, `HttpOnly`, path `/api/auth/oidc`, 10 minutes), like passkey ceremonies. The session cookie stays `Strict`; a link from Settings records the starting session's hash and checks it is still live at the callback, because the Strict cookie isn't sent on the redirect back.
+- **Callback:** `GET /api/auth/oidc/callback`, always a 303 into the GUI with `?sso=linked|unlinked|denied|expired|failed|signed-out` on anything but a plain sign-in.
+- **Own HTTP client** for the issuer: no redirects, 15 s timeout, 1 MiB answers, plus `SWITCHBOARD_OIDC_CA_FILE` merged into the platform roots (`tls_certs_merge`). Deliveries keep their own client, unchanged.
+- **`SWITCHBOARD_PASSKEY_LOGIN=false`** hides passkey sign-in (and `login/start` answers 403); registering a passkey through `enroll` still works. Removing a passkey or identity is refused when no way in would be left.
+- **Tested:** `api::oidc::tests` run the real router against a mock provider on a local port (Ed25519-signed ID tokens, PKCE and client-secret checks): unlinked rejected, wrong state, wrong nonce, missing or foreign cookie, provider error, link from Settings then sign in, other `sub` rejected, link after sign-out refused, link through enrolment, last identity can't be removed, status and 403 with passkeys off. `config::tests` cover the settings.
+- **Not verified:** against the real Pocket ID at `https://auth.devops.lan` in a browser, and the custom CA against a real TLS server (only that the file is loaded at start).
+
 ## Next steps, in order
 
 0. **Check 0.2.0 by hand once loopback works:** add a dedupe node and an Apprise target in the GUI, turn on quiet hours, and look at the inspector, the node cards and the history filter in light and dark mode. Run an Apprise API container (`caronc/apprise`) and use **Send a test notification** with an `ntfy://` URL.

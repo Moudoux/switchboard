@@ -23,7 +23,7 @@ A sender only ever needs one URL and one token. Changing where notifications end
 - **Retries and fallbacks:** each target retries with exponential backoff and jitter, honours `Retry-After`, and gives up after a number of attempts or a length of time. When a target gives up, the notification goes on to its fallback targets.
 - **Survives restarts:** everything is in SQLite. After a crash or restart, unrouted notifications are routed and interrupted deliveries are sent again.
 - **History:** every notification, delivery and attempt, with HTTP status, error and response, live in the GUI. Filter it by target, status or text. Redeliver a notification or retry a single delivery with one click.
-- **Passkey-only sign-in:** the GUI has no passwords. The first passkey is registered through a one-time link printed in the server's terminal.
+- **Passkeys and single sign-on:** the GUI has no passwords. Sign in with a passkey, or through any OpenID Connect provider (Pocket ID, Authelia, Authentik, Keycloak and others) once its account is linked. The first passkey or link is made through a one-time link printed in the server's terminal.
 - **Small:** one Rust binary that also serves the GUI, and a multi-arch image for `linux/amd64` and `linux/arm64` (Raspberry Pi).
 
 ## Running it
@@ -42,7 +42,20 @@ Then register your first passkey:
 docker exec -it switchboard switchboard enroll
 ```
 
-It prints a link that works once, within 15 minutes. Open it, register a passkey, and you're signed in. Add more passkeys later under **Settings**, or run `enroll` again to set one up on another device. The command only runs in a terminal, so the link never ends up in a log.
+It prints a link that works once, within 15 minutes. Open it, register a passkey (or link single sign-on, below), and you're signed in. Add more passkeys later under **Settings**, or run `enroll` again to set one up on another device. The command only runs in a terminal, so the link never ends up in a log. It's also the way back in if you ever lock yourself out.
+
+## Single sign-on (OpenID Connect)
+
+Switchboard can sign in through an OpenID Connect provider, with the authorization code flow, PKCE (S256), `state` and `nonce`, as a confidential client. It reads the provider's endpoints from `<issuer>/.well-known/openid-configuration`, and checks the ID token's signature against the provider's keys, and its `iss`, `aud`, `exp` and `nonce`.
+
+1. In the provider, add a client (confidential, with a secret) with the callback URL `https://<your Switchboard>/api/auth/oidc/callback`, the address in `SWITCHBOARD_ORIGIN` plus that path. The scopes are `openid profile email` unless you change `SWITCHBOARD_OIDC_SCOPES`; only `openid` is needed.
+2. Set `SWITCHBOARD_OIDC_ISSUER`, `SWITCHBOARD_OIDC_CLIENT_ID` and `SWITCHBOARD_OIDC_CLIENT_SECRET_FILE` (or `SWITCHBOARD_OIDC_CLIENT_SECRET`), and restart. When the provider's certificate comes from your own CA, point `SWITCHBOARD_OIDC_CA_FILE` at it.
+3. **Link your account.** Only a linked account can sign in; any other gets an error and no session. An account is the provider's issuer and its user id (`sub`), never the email address. Either:
+   - signed in with a passkey, open **Settings** and click **Link single sign-on**, or
+   - run `switchboard enroll` and, on its page, choose the single sign-on button instead of registering a passkey.
+4. Optionally, set `SWITCHBOARD_PASSKEY_LOGIN=false`, so the sign-in page only offers single sign-on. Passkeys you have stay registered, and `enroll` still works.
+
+Senders' tokens on `/api/v1/notify` are not affected.
 
 ## Sending notifications
 
@@ -124,6 +137,14 @@ A failed attempt is retried when it was a network error, a timeout, or HTTP 408,
 | `SWITCHBOARD_RETENTION_DAYS` | `30`                    | Notifications older than this are deleted, unless still being delivered. |
 | `SWITCHBOARD_CONCURRENCY`    | `16`                    | Deliveries sent at the same time.                                       |
 | `SWITCHBOARD_COOKIE_SECURE`  | `true`                  | Set `false` only to use the GUI over plain HTTP on a hostname other than localhost. Passkeys won't work there anyway. |
+| `SWITCHBOARD_PASSKEY_LOGIN`  | `true`                  | Set `false` to offer only single sign-on on the sign-in page. Needs `SWITCHBOARD_OIDC_ISSUER`. `enroll` links still work. |
+| `SWITCHBOARD_OIDC_ISSUER`    | unset (off)             | The OpenID Connect issuer, such as `https://auth.example.lan`. Single sign-on is off without it. |
+| `SWITCHBOARD_OIDC_CLIENT_ID` |                         | The client's id at the provider. Needed with an issuer.                 |
+| `SWITCHBOARD_OIDC_CLIENT_SECRET_FILE` |                | A file holding the client secret (surrounding whitespace is ignored), such as a Docker secret. |
+| `SWITCHBOARD_OIDC_CLIENT_SECRET` |                     | The client secret itself, instead of the file. Set one of the two.      |
+| `SWITCHBOARD_OIDC_SCOPES`    | `openid profile email`  | Scopes to ask for, separated by spaces or commas. `openid` is always sent. |
+| `SWITCHBOARD_OIDC_CA_FILE`   | unset                   | A PEM file of CA certificates trusted, besides the system's, when talking to the provider. Deliveries don't use it. |
+| `SWITCHBOARD_OIDC_BUTTON_LABEL` | `Sign in with SSO`   | The sign-in button's text, such as `Sign in with Pocket ID`.            |
 | `TZ`                         | UTC                     | The time zone for quiet hours that don't name one, such as `Europe/Stockholm`. |
 | `RUST_LOG`                   | `switchboard=info`      | Log level.                                                              |
 
@@ -147,6 +168,7 @@ Open http://localhost:5173, then run `just enroll` for the first passkey's link.
 | `server/src/engine/`         | The router with dedupe, the delivery worker with retries and fallbacks, and HTTP and Apprise sending |
 | `server/src/quiet_hours.rs`  | Quiet hours                                                   |
 | `server/src/api/auth.rs`     | Passkeys, sessions and `enroll`                               |
+| `server/src/api/oidc.rs`     | Single sign-on with OpenID Connect                            |
 | `server/src/api/admin.rs`    | The GUI's API                                                 |
 | `server/migrations/`         | The SQLite schema                                             |
 | `web/src/flow/`              | The routing editor                                            |

@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod auth;
 pub mod ingest;
+pub mod oidc;
 
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request};
@@ -15,13 +16,17 @@ use tower_http::trace::TraceLayer;
 use crate::state::AppState;
 
 pub fn router(state: AppState) -> Router {
-    let protected = admin::routes().merge(auth::passkey_routes()).route_layer(
-        axum::middleware::from_fn_with_state(state.clone(), auth::require_session),
-    );
+    let protected = admin::routes()
+        .merge(auth::passkey_routes())
+        .merge(oidc::identity_routes())
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_session,
+        ));
     Router::new()
         .route("/api/v1/notify", post(ingest::notify))
         .route("/healthz", get(healthz))
-        .nest("/api/auth", auth::routes())
+        .nest("/api/auth", auth::routes().merge(oidc::routes()))
         .nest("/api", protected)
         .fallback_service(web(&state.config.web_dir))
         .layer(DefaultBodyLimit::max(256 * 1024))

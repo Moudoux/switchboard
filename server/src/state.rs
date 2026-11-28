@@ -7,6 +7,7 @@ use tokio::sync::{Notify, broadcast, mpsc};
 use webauthn_rs::Webauthn;
 
 use crate::api::auth::Ceremony;
+use crate::api::oidc::Oidc;
 use crate::config::Config;
 use crate::graph::Graph;
 
@@ -34,6 +35,8 @@ pub struct Inner {
     pub webauthn: Webauthn,
     /// Passkey sign-ins and registrations in progress, by ceremony id.
     pub ceremonies: Mutex<HashMap<String, Ceremony>>,
+    /// Single sign-on, when an issuer is configured.
+    pub oidc: Option<Oidc>,
 }
 
 impl std::ops::Deref for AppState {
@@ -51,6 +54,11 @@ impl AppState {
         route_tx: mpsc::UnboundedSender<String>,
     ) -> anyhow::Result<Self> {
         let webauthn = crate::api::auth::webauthn(&config.origin)?;
+        let oidc = config
+            .oidc
+            .clone()
+            .map(|c| Oidc::new(c, &config.origin))
+            .transpose()?;
         let http = reqwest::Client::builder()
             .user_agent(concat!("switchboard/", env!("CARGO_PKG_VERSION")))
             .redirect(reqwest::redirect::Policy::limited(5))
@@ -66,6 +74,7 @@ impl AppState {
             events: broadcast::channel(256).0,
             webauthn,
             ceremonies: Mutex::new(HashMap::new()),
+            oidc,
         })))
     }
 
